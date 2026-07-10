@@ -1,0 +1,28 @@
+[package]
+name = "ccstatusline-native"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Fast native renderer for ccstatusline configurations"
+license = "MIT"
+repository = "https://github.com/zhyu/ccstatusline-native"
+readme = "README.md"
+keywords = ["claude-code", "statusline", "terminal", "powerline"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+regex = "1.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2.0"
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
+
+[dev-dependencies]
+tempfile = "3.20"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = true

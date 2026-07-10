@@ -1,0 +1,46 @@
+name: Verify Homebrew Tap Deploy Key
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify tap write access
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Verify deploy key is configured
+        env:
+          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          if [ -z "${HOMEBREW_TAP_DEPLOY_KEY:-}" ]; then
+            echo "HOMEBREW_TAP_DEPLOY_KEY is not configured or is empty" >&2
+            exit 1
+          fi
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@v6
+        with:
+          repository: zhyu/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+
+      - name: Create and delete a temporary tap ref
+        env:
+          TEST_BRANCH: ccstatusline-native-key-check-${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          cleanup() {
+            git push origin --delete "$TEST_BRANCH" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          git push origin "HEAD:refs/heads/$TEST_BRANCH"
+          git ls-remote --exit-code --heads origin "$TEST_BRANCH" >/dev/null
+          git push origin --delete "$TEST_BRANCH"
+          trap - EXIT
+
+          echo "HOMEBREW_TAP_DEPLOY_KEY can read and write tap refs."

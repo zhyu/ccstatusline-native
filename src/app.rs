@@ -1,0 +1,333 @@
+use crate::config::{self, SupportReport};
+use crate::render;
+use crate::status::StatusInput;
+use std::env;
+use std::ffi::OsString;
+use std::io::{self, IsTerminal, Read, Write};
+use std::path::PathBuf;
+use std::process::{ExitCode, ExitStatus};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Action {
+    Render,
+    Check,
+    SupportReport,
+    Help,
+    Version,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputFormat {
+    Human,
+    Json,
+}
+
+struct Cli {
+    action: Action,
+    format: OutputFormat,
+    config: PathBuf,
+}
+
+pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
+    let cli = match parse_cli(args) {
+        Ok(cli) => cli,
+        Err(message) => {
+            eprintln!("{}: {message}\n\nRun with --help for usage.", crate::NAME);
+            return ExitCode::from(2);
+        }
+    };
+
+    match cli.action {
+        Action::Help => {
+            print_help();
+            ExitCode::SUCCESS
+        }
+        Action::Version => {
+            println!(
+                "{} {} (compatible with ccstatusline {})",
+                crate::NAME,
+                env!("CARGO_PKG_VERSION"),
+                crate::REFERENCE_CCSTATUSLINE_VERSION
+            );
+            ExitCode::SUCCESS
+        }
+        Action::Check | Action::SupportReport => inspect_config(&cli),
+        Action::Render if io::stdin().is_terminal() => run_tui(&cli.config),
+        Action::Render => run_renderer(&cli.config),
+    }
+}
+
+fn parse_cli(args: impl Iterator<Item = OsString>) -> Result<Cli, String> {
+    let mut action = Action::Render;
+    let mut format = OutputFormat::Human;
+    let mut config = config::default_config_path();
+    let mut args = args.peekable();
+    while let Some(argument) = args.next() {
+        match argument.to_str() {
+            Some("--config") => {
+                config = PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| "--config requires a path".to_string())?,
+                );
+            }
+            Some("--check-config") => set_action(&mut action, Action::Check)?,
+            Some("--support-report") => set_action(&mut action, Action::SupportReport)?,
+            Some("--format") => {
+                format = match args.next().as_deref().and_then(|value| value.to_str()) {
+                    Some("human") => OutputFormat::Human,
+                    Some("json") => OutputFormat::Json,
+                    Some(value) => return Err(format!("unknown output format `{value}`")),
+                    None => return Err("--format requires `human` or `json`".into()),
+                };
+            }
+            Some("-h" | "--help") => set_action(&mut action, Action::Help)?,
+            Some("-V" | "--version") => set_action(&mut action, Action::Version)?,
+            Some(value) => return Err(format!("unknown argument `{value}`")),
+            None => return Err("arguments must be valid UTF-8".into()),
+        }
+    }
+    Ok(Cli {
+        action,
+        format,
+        config,
+    })
+}
+
+fn set_action(current: &mut Action, next: Action) -> Result<(), String> {
+    if *current != Action::Render && *current != next {
+        return Err(
+            "choose only one of --check-config, --support-report, --help, or --version".into(),
+        );
+    }
+    *current = next;
+    Ok(())
+}
+
+fn inspect_config(cli: &Cli) -> ExitCode {
+    let loaded = match config::load(&cli.config) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("{}: {error}", crate::NAME);
+            return ExitCode::from(2);
+        }
+    };
+    let report = config::support_report(&loaded);
+    match cli.format {
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).expect("support report is serializable")
+            );
+        }
+        OutputFormat::Human if cli.action == Action::SupportReport => {
+            println!("{}", report.markdown());
+        }
+        OutputFormat::Human if report.supported => {
+            println!(
+                "Fast path enabled: {} is supported by {}.",
+                loaded.path.display(),
+                crate::NAME
+            );
+        }
+        OutputFormat::Human => print_unsupported_report(&report),
+    }
+    if report.supported || cli.action == Action::SupportReport {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(2)
+    }
+}
+
+fn run_renderer(config_path: &std::path::Path) -> ExitCode {
+    let mut stdin = Vec::new();
+    if let Err(error) = io::stdin().read_to_end(&mut stdin) {
+        eprintln!("{}: cannot read status JSON: {error}", crate::NAME);
+        return ExitCode::FAILURE;
+    }
+
+    let loaded = match config::load(config_path) {
+        Ok(config) => config,
+        Err(error) => {
+            warn_fallback(&error.to_string(), None);
+            return delegate_render(config_path, &stdin);
+        }
+    };
+    let report = config::support_report(&loaded);
+    if !report.supported {
+        warn_fallback(&report.summary(), Some(&report));
+        return delegate_render(config_path, &stdin);
+    }
+
+    let status = match StatusInput::parse(&stdin) {
+        Ok(status) => status,
+        Err(error) => {
+            warn_fallback(&error.to_string(), None);
+            return delegate_render(config_path, &stdin);
+        }
+    };
+    let Some(width) = terminal_width() else {
+        warn_fallback(
+            "terminal width is unavailable from CCSTATUSLINE_WIDTH or COLUMNS",
+            None,
+        );
+        return delegate_render(config_path, &stdin);
+    };
+    match render::render(&loaded.settings, &status, Some(width)) {
+        Ok(output) => {
+            if let Err(error) = io::stdout().write_all(output.as_bytes()) {
+                eprintln!(
+                    "{}: cannot write rendered status line: {error}",
+                    crate::NAME
+                );
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(error) => {
+            warn_fallback(&error.to_string(), None);
+            delegate_render(config_path, &stdin)
+        }
+    }
+}
+
+fn run_tui(config_path: &std::path::Path) -> ExitCode {
+    let status = match crate::fallback::tui(config_path) {
+        Ok(status) => status,
+        Err(error) => {
+            eprintln!("{}: {error}", crate::NAME);
+            return ExitCode::FAILURE;
+        }
+    };
+    if !status.success() {
+        return exit_code(status);
+    }
+
+    match config::load(config_path) {
+        Ok(config) => {
+            let report = config::support_report(&config);
+            if !report.supported {
+                eprintln!();
+                print_unsupported_report_stderr(&report);
+            }
+        }
+        Err(error) => eprintln!(
+            "\n{}: TUI exited successfully, but the resulting config cannot be checked: {error}",
+            crate::NAME
+        ),
+    }
+    ExitCode::SUCCESS
+}
+
+fn delegate_render(config_path: &std::path::Path, stdin: &[u8]) -> ExitCode {
+    match crate::fallback::render(config_path, stdin) {
+        Ok(output) if output.status.success() => {
+            if let Err(error) = io::stdout().write_all(&output.stdout) {
+                eprintln!("{}: cannot write fallback output: {error}", crate::NAME);
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Ok(output) => {
+            eprintln!(
+                "{}: ccstatusline fallback failed; discarded {} bytes of partial stdout",
+                crate::NAME,
+                output.stdout.len()
+            );
+            exit_code(output.status)
+        }
+        Err(error) => {
+            eprintln!("{}: {error}", crate::NAME);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn warn_fallback(reason: &str, report: Option<&SupportReport>) {
+    eprintln!(
+        "{}: fast path disabled; using ccstatusline {}: {reason}",
+        crate::NAME,
+        crate::REFERENCE_CCSTATUSLINE_VERSION
+    );
+    if let Some(report) = report {
+        eprintln!(
+            "{}: run `{} --support-report --config {}` for a copyable implementation request",
+            crate::NAME,
+            crate::NAME,
+            report.config_path.display()
+        );
+    }
+}
+
+fn print_unsupported_report(report: &SupportReport) {
+    println!(
+        "Fast path disabled; ccstatusline {} will be used.\n\nCopy this implementation request:\n\n{}",
+        crate::REFERENCE_CCSTATUSLINE_VERSION,
+        report.markdown()
+    );
+}
+
+fn print_unsupported_report_stderr(report: &SupportReport) {
+    eprintln!(
+        "Fast path disabled; ccstatusline {} will be used.\n\nCopy this implementation request:\n\n{}",
+        crate::REFERENCE_CCSTATUSLINE_VERSION,
+        report.markdown()
+    );
+}
+
+fn terminal_width() -> Option<usize> {
+    if let Ok(override_width) = env::var("CCSTATUSLINE_WIDTH") {
+        return parse_positive_decimal_prefix(&override_width);
+    }
+    env::var("COLUMNS")
+        .ok()
+        .and_then(|columns| parse_positive_decimal_prefix(&columns))
+}
+
+fn parse_positive_decimal_prefix(value: &str) -> Option<usize> {
+    let value = value.trim_start();
+    let (negative, digits_source) = match value.as_bytes().first() {
+        Some(b'+') => (false, &value[1..]),
+        Some(b'-') => (true, &value[1..]),
+        _ => (false, value),
+    };
+    if negative {
+        return None;
+    }
+    let digit_count = digits_source.bytes().take_while(u8::is_ascii_digit).count();
+    digits_source[..digit_count]
+        .parse::<usize>()
+        .ok()
+        .filter(|width| *width > 0)
+}
+
+fn exit_code(status: ExitStatus) -> ExitCode {
+    ExitCode::from(status.code().unwrap_or(1).clamp(1, 255) as u8)
+}
+
+fn print_help() {
+    println!(
+        "{name} — fast native ccstatusline renderer\n\n\
+Usage:\n  {name} [--config PATH]\n  {name} --check-config [--format human|json] [--config PATH]\n  {name} --support-report [--format human|json] [--config PATH]\n\n\
+With piped Claude Code status JSON, render the status line. With a terminal on\n\
+stdin, open ccstatusline {reference}'s TUI and check the saved config afterward.\n\n\
+Options:\n  --config PATH       Override ~/.config/ccstatusline/settings.json\n  --check-config      Exit 0 when the native fast path supports the config\n  --support-report    Print a copyable compatibility request\n  --format FORMAT     human (default) or json\n  -V, --version       Print version information\n  -h, --help          Print this help",
+        name = crate::NAME,
+        reference = crate::REFERENCE_CCSTATUSLINE_VERSION,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_width_like_javascript_parse_int() {
+        assert_eq!(parse_positive_decimal_prefix("120garbage"), Some(120));
+        assert_eq!(parse_positive_decimal_prefix("  +80px"), Some(80));
+        assert_eq!(parse_positive_decimal_prefix("0"), None);
+        assert_eq!(parse_positive_decimal_prefix("-10"), None);
+        assert_eq!(parse_positive_decimal_prefix("garbage"), None);
+    }
+}

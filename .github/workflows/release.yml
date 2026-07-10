@@ -1,0 +1,263 @@
+name: Release Binaries
+
+on:
+  push:
+    branches:
+      - main
+  release:
+    types:
+      - published
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ccstatusline-native-release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checks:
+    name: Run required checks
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build ${{ matrix.artifact_name }}
+    needs: checks
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            artifact_name: ccstatusline-native-macos-arm64
+            binary_name: ccstatusline-native
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: ccstatusline-native-linux-x86_64
+            binary_name: ccstatusline-native
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Cache Cargo data
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Build binary
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      - name: Package binary and documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="${{ matrix.artifact_name }}"
+          mkdir -p "dist/$package"
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" "dist/$package/"
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md "dist/$package/"
+          tar -C dist -czf "dist/$package.tar.gz" "$package"
+          shasum -a 256 "dist/$package.tar.gz" > "dist/$package.tar.gz.sha256"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            dist/${{ matrix.artifact_name }}.tar.gz
+            dist/${{ matrix.artifact_name }}.tar.gz.sha256
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish tagged release assets
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Upload assets to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG_NAME" release-assets/* --clobber
+
+  publish-nightly:
+    name: Publish nightly release
+    needs: build
+    runs-on: ubuntu-latest
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Prepare nightly release notes
+        run: |
+          cat > nightly-notes.md <<EOF
+          Nightly build from \`${GITHUB_SHA}\`.
+
+          This prerelease is replaced by each main-branch push or manually dispatched run.
+          EOF
+
+      - name: Publish nightly assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NIGHTLY_TAG: nightly
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "$NIGHTLY_TAG" "$GITHUB_SHA"
+          git push --force origin "refs/tags/$NIGHTLY_TAG"
+
+          if gh release view "$NIGHTLY_TAG" >/dev/null 2>&1; then
+            gh release edit "$NIGHTLY_TAG" \
+              --title "Nightly Build" \
+              --notes-file nightly-notes.md \
+              --prerelease \
+              --target "$GITHUB_SHA"
+          else
+            gh release create "$NIGHTLY_TAG" \
+              --title "Nightly Build" \
+              --notes-file nightly-notes.md \
+              --prerelease \
+              --latest=false \
+              --target "$GITHUB_SHA"
+          fi
+
+          gh release upload "$NIGHTLY_TAG" release-assets/* --clobber
+
+  publish-homebrew:
+    name: Update Homebrew tap
+    needs: publish-nightly
+    runs-on: ubuntu-latest
+    if: vars.HOMEBREW_TAP_ENABLED == 'true'
+
+    steps:
+      - name: Verify Homebrew tap deploy key is configured
+        env:
+          HOMEBREW_TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          if [ -z "${HOMEBREW_TAP_DEPLOY_KEY:-}" ]; then
+            echo "HOMEBREW_TAP_DEPLOY_KEY is not configured or is empty" >&2
+            exit 1
+          fi
+
+      - name: Check out source repository
+        uses: actions/checkout@v6
+        with:
+          path: source
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@v6
+        with:
+          repository: zhyu/homebrew-tap
+          path: homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+
+      - name: Publish Homebrew formula
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package_version="$(awk -F '"' '/^version = / { print $2; exit }' source/Cargo.toml)"
+          short_sha="${GITHUB_SHA::7}"
+          release_timestamp="$(date -u +%Y%m%d%H%M%S)"
+          formula_version="${package_version}-nightly.${release_timestamp}.${GITHUB_RUN_ATTEMPT}"
+          package_sha256="$(cut -d ' ' -f 1 release-assets/ccstatusline-native-macos-arm64.tar.gz.sha256)"
+
+          cat > homebrew-tap/Formula/ccstatusline-native.rb <<EOF
+          class CcstatuslineNative < Formula
+            desc "Fast native renderer for ccstatusline configurations"
+            homepage "https://github.com/zhyu/ccstatusline-native"
+            license "MIT"
+            url "https://github.com/zhyu/ccstatusline-native/releases/download/nightly/ccstatusline-native-macos-arm64.tar.gz"
+            version "$formula_version"
+            sha256 "$package_sha256"
+
+            depends_on arch: :arm64
+            depends_on :macos
+
+            def install
+              bin.install "ccstatusline-native"
+            end
+
+            test do
+              assert_match "ccstatusline-native", shell_output("#{bin}/ccstatusline-native --version")
+            end
+          end
+          EOF
+
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add Formula/ccstatusline-native.rb
+
+          if git diff --cached --quiet; then
+            echo "Homebrew formula is already up to date."
+            exit 0
+          fi
+
+          git commit -m "Update ccstatusline-native nightly to $formula_version ($short_sha)"
+
+          attempt=1
+          while [ "$attempt" -le 3 ]; do
+            git pull --rebase origin main
+            if git push origin main; then
+              exit 0
+            fi
+            attempt=$((attempt + 1))
+            sleep 2
+          done
+          echo "Failed to update the Homebrew tap after 3 attempts." >&2
+          exit 1
