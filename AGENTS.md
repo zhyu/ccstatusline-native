@@ -130,12 +130,8 @@ mutate GitHub release state. Its checks job must succeed before any archive is
 built. Archives include the binary, `README.md`, `LICENSE`, and
 `THIRD_PARTY_NOTICES.md`.
 
-The Homebrew formula tracks the `nightly` release produced from `main`. It is
-updated only after the nightly assets exist and their SHA-256 is known. Never
-print `HOMEBREW_TAP_DEPLOY_KEY`; verify it with the manual workflow, which
-creates and deletes a temporary branch ref in `zhyu/homebrew-tap`.
-`HOMEBREW_TAP_ENABLED` must remain unset until that verification succeeds.
-
-Do not hand-edit the tap as part of an ordinary source change. Let the release
-workflow produce the formula so its URL, version, and checksum describe the
-same archive.
+The Homebrew formula tracks the `nightly` release produced from `main`. A
+workflow in `zhyu/homebrew-tap` owns formula generation and verifies the public
+archive against its published SHA-256 before committing. Keep this repository
+free of cross-repository credentials; changes to artifact names or layout must
+be coordinated with the tap-owned updater.

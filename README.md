@@ -182,17 +182,13 @@ CI runs formatting, clippy, and tests on pushes and pull requests. The release
 workflow reruns those checks before it can build Apple Silicon macOS and x86-64
 Linux archives.
 
-- Every successful `main` build replaces the GitHub `nightly` prerelease and
-  updates `zhyu/homebrew-tap`'s `Formula/ccstatusline-native.rb`.
+- Every successful `main` build replaces the GitHub `nightly` prerelease.
 - Publishing a GitHub release builds the same archive from the release tag and
   attaches it to that release.
-- Tap publication uses a repository secret named `HOMEBREW_TAP_DEPLOY_KEY`,
-  containing a write-enabled SSH deploy key scoped only to
-  `zhyu/homebrew-tap`. The manual **Verify Homebrew Tap Deploy Key** workflow
-  validates access using a temporary ref and cleans it up.
-- The tap job runs only when the repository variable
-  `HOMEBREW_TAP_ENABLED` is set to `true`, so initial releases cannot fail or
-  mutate the tap before its dedicated key is configured.
+- A scheduled workflow owned by `zhyu/homebrew-tap` reads the public nightly,
+  verifies its checksum, and updates `Formula/ccstatusline-native.rb` using the
+  tap repository's own `GITHUB_TOKEN`. No cross-repository credential is stored
+  here.
 
 ## License
 
