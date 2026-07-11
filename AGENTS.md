@@ -4,7 +4,7 @@
 
 This repository is a strict native fast path for a useful subset of
 `ccstatusline`, not an independent status-line design. Its compatibility target
-is pinned in `src/lib.rs` and is currently `ccstatusline@2.2.22`.
+is pinned in `src/lib.rs` and is currently `ccstatusline@2.2.23`.
 
 The central invariant is:
 
@@ -19,6 +19,7 @@ Unknown configuration is unsupported until its semantics are understood.
 
 - `src/config.rs`: configuration parsing and fast-path eligibility.
 - `src/status.rs`: Claude Code status-input interpretation.
+- `src/context.rs`: transcript-derived context length and model-window fallback.
 - `src/widgets.rs`: widget values.
 - `src/render.rs` and `src/ansi.rs`: layout, Powerline styling, width, and
   truncation.
@@ -64,9 +65,9 @@ Use this sequence for every compatibility addition:
 3. Query the pinned behavior oracle. Prefer an installed reference, then:
 
    ```sh
-   bunx -y ccstatusline@2.2.22 --config tests/fixtures/example-settings.json
+   bunx -y ccstatusline@2.2.23 --config tests/fixtures/example-settings.json
    # or
-   npx --yes ccstatusline@2.2.22 --config tests/fixtures/example-settings.json
+   npx --yes ccstatusline@2.2.23 --config tests/fixtures/example-settings.json
    ```
 
    Capture raw stdout bytes. Exercise absent/null/empty values, raw and styled
@@ -74,7 +75,7 @@ Use this sequence for every compatibility addition:
    affect the feature.
 4. If outputs cannot distinguish the semantics, fetch the exact published
    package on demand into a temporary directory—for example with
-   `npm pack ccstatusline@2.2.22 --pack-destination "$TMPDIR"`—and inspect the
+   `npm pack ccstatusline@2.2.23 --pack-destination "$TMPDIR"`—and inspect the
    smallest relevant source area. Do not commit the archive or extracted code,
    and do not add ccstatusline as a submodule, subtree, or runtime source
    dependency.
@@ -106,6 +107,10 @@ approximation.
   absent-data behavior when it has one; otherwise delegate. Terminal width is a
   defined example: after every probe fails, render with no effective width,
   one-space Powerline flex separators, and no width truncation.
+- Transcript-derived context supports Claude Code's canonical UTC ISO
+  timestamps. Missing, unreadable, empty, and partially appended JSONL files
+  follow the pinned zero/skip behavior; structurally incompatible eligible rows
+  must delegate instead of producing a plausible context value.
 - Unicode text that `ansi::requires_reference_width` classifies as divergent
   must delegate unless differential tests prove and implement matching width.
 

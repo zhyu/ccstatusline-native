@@ -202,11 +202,140 @@ fn true_unknown_width_uses_native_reference_semantics() {
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     assert_eq!(output.stdout.len(), 767);
-    // ccstatusline 2.2.22 with both width variables absent and PATH disabled,
+    // ccstatusline 2.2.23 with both width variables absent and PATH disabled,
     // which makes its ancestor, stty, tput, and Git probes unavailable.
     assert_eq!(
         format!("{:x}", Sha256::digest(&output.stdout)),
         "2dab8943d1022b07e015cdf3cbf88562accaa887db6e3bb6a82e20299276aa14"
+    );
+}
+
+#[test]
+fn null_live_context_uses_transcript_without_runtime_fallback() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("settings.json");
+    let transcript = temp.path().join("session.jsonl");
+    fs::write(&config, include_bytes!("fixtures/settings.json")).unwrap();
+    fs::write(
+        &transcript,
+        [
+            serde_json::json!({
+                "timestamp": "2026-07-11T01:00:00.000Z",
+                "message": {
+                    "stop_reason": "end_turn",
+                    "usage": {
+                        "input_tokens": 40000,
+                        "output_tokens": 9000,
+                        "cache_read_input_tokens": 10000,
+                        "cache_creation_input_tokens": 5000
+                    }
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "system",
+                "subtype": "compact_boundary",
+                "timestamp": "2026-07-11T01:01:00.000Z"
+            })
+            .to_string(),
+            serde_json::json!({
+                "timestamp": "2026-07-11T01:02:00.000Z",
+                "message": {
+                    "stop_reason": "end_turn",
+                    "usage": {
+                        "input_tokens": 10000,
+                        "output_tokens": 5000,
+                        "cache_read_input_tokens": 3000,
+                        "cache_creation_input_tokens": 2000
+                    }
+                }
+            })
+            .to_string(),
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+    let reference = executable_script(temp.path(), "exit 97");
+    let mut status: Value = serde_json::from_slice(include_bytes!("fixtures/status.json")).unwrap();
+    status["transcript_path"] = Value::String(transcript.to_string_lossy().into_owned());
+    status["context_window"]["current_usage"] = Value::Null;
+    status["context_window"]["used_percentage"] = Value::Null;
+    status["context_window"]["remaining_percentage"] = Value::Null;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ccstatusline-native"))
+        .args(["--config", config.to_str().unwrap()])
+        .env("CCSTATUSLINE_NATIVE_FALLBACK", reference)
+        .env("CCSTATUSLINE_WIDTH", "131")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec(&status).unwrap())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let rendered = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        rendered.contains("15k/200k") && rendered.contains("(8%)"),
+        "unexpected output: {rendered:?}"
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&output.stdout)),
+        "58caae96e138b15469aad1a7cc310bfeb7213731cf1e77933edd992bd601d5b1"
+    );
+}
+
+#[test]
+fn early_context_uses_223_environment_window_without_fallback() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("settings.json");
+    fs::write(&config, include_bytes!("fixtures/settings.json")).unwrap();
+    let reference = executable_script(temp.path(), "exit 97");
+    let mut status: Value = serde_json::from_slice(include_bytes!("fixtures/status.json")).unwrap();
+    status["transcript_path"] = Value::String(
+        temp.path()
+            .join("missing.jsonl")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    status["context_window"]["context_window_size"] = Value::Null;
+    status["context_window"]["current_usage"] = Value::Null;
+    status["context_window"]["used_percentage"] = Value::Null;
+    status["context_window"]["remaining_percentage"] = Value::Null;
+    status["model"] = serde_json::json!({ "id": "claude-opus-4-6", "display_name": "Opus 4.6" });
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ccstatusline-native"))
+        .args(["--config", config.to_str().unwrap()])
+        .env("CCSTATUSLINE_NATIVE_FALLBACK", reference)
+        .env("CCSTATUSLINE_CONTEXT_SIZE_FALLBACK", "333333px")
+        .env("CCSTATUSLINE_WIDTH", "131")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec(&status).unwrap())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let rendered = String::from_utf8_lossy(&output.stdout);
+    assert!(rendered.contains("0/333k") && rendered.contains("(0%)"));
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&output.stdout)),
+        "a201760d4d81a955e737b4b3faeda14c6027254bfc9a90be0598b8bd0230f248"
     );
 }
 

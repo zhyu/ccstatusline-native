@@ -21,7 +21,7 @@ fn resolve_width(
         .or_else(probe)
 }
 
-fn parse_positive_decimal_prefix(value: &str) -> Option<usize> {
+pub(crate) fn parse_positive_decimal_prefix(value: &str) -> Option<usize> {
     let value = value.trim_start();
     let (negative, digits_source) = match value.as_bytes().first() {
         Some(b'+') => (false, &value[1..]),

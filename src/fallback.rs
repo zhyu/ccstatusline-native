@@ -161,6 +161,6 @@ mod tests {
     #[test]
     fn package_version_is_pinned() {
         let package = format!("ccstatusline@{}", crate::REFERENCE_CCSTATUSLINE_VERSION);
-        assert_eq!(package, "ccstatusline@2.2.22");
+        assert_eq!(package, "ccstatusline@2.2.23");
     }
 }

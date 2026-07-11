@@ -2,7 +2,7 @@
 
 Parts of the compatibility behavior and rendering algorithms were derived from
 the MIT-licensed [`ccstatusline`](https://github.com/sirmalloc/ccstatusline)
-2.2.22 source while building byte-level compatibility.
+2.2.23 source while building byte-level compatibility.
 
 ## ccstatusline
 

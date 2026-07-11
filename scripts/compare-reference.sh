@@ -5,7 +5,7 @@ usage() {
   cat >&2 <<'EOF'
 Usage: compare-reference.sh CONFIG STATUS_JSON [NATIVE_BINARY] [WIDTH ...]
 
-Compare raw output from ccstatusline-native with ccstatusline 2.2.22.
+Compare raw output from ccstatusline-native with ccstatusline 2.2.23.
 The reference is selected in this order: ccstatusline, bunx, npx.
 EOF
 }
@@ -40,14 +40,14 @@ trap 'rm -rf "$temporary"' EXIT HUP INT TERM
 run_reference() {
   width=$1
   if command -v ccstatusline >/dev/null 2>&1 \
-    && ccstatusline --version 2>/dev/null | grep -q '2\.2\.22'; then
+    && ccstatusline --version 2>/dev/null | grep -q '2\.2\.23'; then
     CCSTATUSLINE_WIDTH=$width ccstatusline --config "$config"
   elif command -v bunx >/dev/null 2>&1; then
-    CCSTATUSLINE_WIDTH=$width bunx -y ccstatusline@2.2.22 --config "$config"
+    CCSTATUSLINE_WIDTH=$width bunx -y ccstatusline@2.2.23 --config "$config"
   elif command -v npx >/dev/null 2>&1; then
-    CCSTATUSLINE_WIDTH=$width npx --yes ccstatusline@2.2.22 --config "$config"
+    CCSTATUSLINE_WIDTH=$width npx --yes ccstatusline@2.2.23 --config "$config"
   else
-    echo "Install ccstatusline 2.2.22, bunx, or npx to run the oracle." >&2
+    echo "Install ccstatusline 2.2.23, bunx, or npx to run the oracle." >&2
     return 127
   fi
 }

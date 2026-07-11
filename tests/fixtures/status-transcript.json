@@ -1,0 +1,20 @@
+{
+  "cwd": "/Users/example/workspace/project",
+  "workspace": {
+    "current_dir": "/Users/example/workspace/project",
+    "project_dir": "/Users/example/workspace/project"
+  },
+  "model": {
+    "id": "claude-opus-4-6",
+    "display_name": "Opus 4.6 (1M context)"
+  },
+  "vim": { "mode": "NORMAL" },
+  "effort": { "level": "xhigh" },
+  "transcript_path": "tests/fixtures/context-transcript.jsonl",
+  "context_window": {
+    "context_window_size": 200000,
+    "current_usage": null,
+    "used_percentage": null,
+    "remaining_percentage": null
+  }
+}

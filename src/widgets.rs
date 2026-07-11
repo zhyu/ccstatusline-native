@@ -78,12 +78,22 @@ fn render_context_bar(
     status: &StatusInput,
 ) -> Result<Option<String>, RenderError> {
     let metrics = status.context_window_metrics();
-    let (Some(used), Some(total)) = (metrics.context_length_tokens, metrics.window_size) else {
-        if status.transcript_path().is_some() {
-            return Err(RenderError::NeedsFallback(
-                "context-bar needs transcript-derived token metrics".into(),
-            ));
-        }
+    let transcript_path = status
+        .transcript_path()
+        .filter(|path| !path.is_empty())
+        .map(Path::new);
+    let used = match (metrics.context_length_tokens, transcript_path) {
+        (Some(used), _) => Some(used),
+        (None, Some(path)) => Some(
+            crate::context::transcript_context_length(path)
+                .map_err(|error| RenderError::NeedsFallback(error.to_string()))?,
+        ),
+        (None, None) => None,
+    };
+    let total = metrics
+        .window_size
+        .or_else(|| transcript_path.map(|_| crate::context::model_context_window_size(status)));
+    let (Some(used), Some(total)) = (used, total) else {
         return Ok(None);
     };
     if total <= 0.0 {
@@ -232,6 +242,7 @@ fn js_round(value: f64) -> f64 {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::io::Write;
 
     fn item(kind: &str) -> WidgetItem {
         serde_json::from_value(json!({ "id": "test", "type": kind })).unwrap()
@@ -294,6 +305,97 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(output, "Context: [██░░░░░░░░░░░░░░] 30k/200k (15%)");
+    }
+
+    #[test]
+    fn context_uses_transcript_when_live_usage_is_null() {
+        let mut transcript = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            transcript,
+            "{}",
+            json!({
+                "timestamp": "2026-07-11T01:02:03.000Z",
+                "message": {
+                    "stop_reason": "end_turn",
+                    "usage": {
+                        "input_tokens": 10000,
+                        "output_tokens": 99999,
+                        "cache_creation_input_tokens": 5000,
+                        "cache_read_input_tokens": 15000
+                    }
+                }
+            })
+        )
+        .unwrap();
+        let output = render_context_bar(
+            &item("context-bar"),
+            &status(json!({
+                "transcript_path": transcript.path(),
+                "context_window": {
+                    "context_window_size": 200000,
+                    "current_usage": null,
+                    "used_percentage": null,
+                    "remaining_percentage": null
+                }
+            })),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(output, "Context: [██░░░░░░░░░░░░░░] 30k/200k (15%)");
+    }
+
+    #[test]
+    fn transcript_metrics_enable_model_window_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = render_context_bar(
+            &item("context-bar"),
+            &status(json!({
+                "transcript_path": directory.path().join("missing.jsonl"),
+                "model": { "id": "claude-opus", "display_name": "Opus (1M)" }
+            })),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(output, "Context: [░░░░░░░░░░░░░░░░] 0/1.0M (0%)");
+
+        assert_eq!(
+            render_context_bar(&item("context-bar"), &status(json!({}))).unwrap(),
+            None
+        );
+        assert_eq!(
+            render_context_bar(
+                &item("context-bar"),
+                &status(json!({ "transcript_path": "" }))
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn live_context_metrics_do_not_read_the_transcript() {
+        let directory = tempfile::tempdir().unwrap();
+        let incompatible = directory.path().join("incompatible.jsonl");
+        std::fs::write(
+            &incompatible,
+            r#"{"timestamp":"not canonical","message":{"usage":{"input_tokens":999}}}"#,
+        )
+        .unwrap();
+
+        let output = render_context_bar(
+            &item("context-bar"),
+            &status(json!({
+                "transcript_path": incompatible,
+                "context_window": {
+                    "context_window_size": 200000,
+                    "current_usage": { "input_tokens": 10000 }
+                }
+            })),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(output.contains("10k/200k (5%)"));
     }
 
     #[test]

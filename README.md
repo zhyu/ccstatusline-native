@@ -6,7 +6,7 @@ deliberately limited subset of `ccstatusline` configuration with native startup
 speed and delegates everything else to the reference implementation.
 
 The project is built around one safety rule: a configuration is either known to
-match `ccstatusline@2.2.22`, or it is rejected by the fast path. Unsupported
+match `ccstatusline@2.2.23`, or it is rejected by the fast path. Unsupported
 settings are never silently approximated.
 
 ## Install
@@ -78,8 +78,8 @@ never triggers the JavaScript fallback.
 Reference lookup is intentionally simple and pinned:
 
 1. an installed `ccstatusline` executable;
-2. `bunx -y ccstatusline@2.2.22`; then
-3. `npx --yes ccstatusline@2.2.22`.
+2. `bunx -y ccstatusline@2.2.23`; then
+3. `npx --yes ccstatusline@2.2.23`.
 
 `CCSTATUSLINE_NATIVE_FALLBACK` can name an explicit reference executable. A
 fallback may therefore need Bun/npm and network access when `ccstatusline` is
@@ -102,12 +102,21 @@ These widgets are implemented:
 | `type` | Implemented behavior and widget-specific options |
 | --- | --- |
 | `vim-mode` | Vim mode from Claude's status input; `metadata.format` values `icon-dash-letter`, `icon-letter`, `icon`, `letter`, and `word`; `metadata.nerdFont` values `true` and `false` |
-| `context-bar` | `metadata.display` values `progress-short` and `progress`, including the reference token formatting and progress bar |
+| `context-bar` | `metadata.display` values `progress-short` and `progress`, including live or transcript-derived context length, model-window fallback, token formatting, and progress bar |
 | `flex-separator` | Full-width spacing and multiple-flex distribution |
 | `model` | Model display name and `rawValue` behavior |
 | `thinking-effort` | Live status value with transcript/settings/default resolution and `rawValue` behavior |
 | `current-working-dir` | Current directory and `rawValue` behavior |
 | `git-branch` | Repository discovery, branch/no-git rendering, and `rawValue` behavior |
+
+`context-bar` prefers Claude Code's live `context_window` metrics. When those
+metrics are temporarily null and a nonempty `transcript_path` is present, it
+derives context length from the latest eligible main-chain transcript usage row.
+Missing, unreadable, and empty transcripts have zero context, matching the
+reference. Model labels such as `(1M context)` supply a missing window size;
+otherwise the 2.2.23 `CCSTATUSLINE_CONTEXT_SIZE_FALLBACK` override or the 200k
+default is used. These documented startup and post-compaction states stay on the
+native path.
 
 The renderer also reproduces the reference Powerline color progression,
 padding, non-breaking spaces, terminal-width truncation, and multiline output
@@ -136,7 +145,7 @@ The report identifies every unsupported value by JSON path, for example:
 ```text
 Implement ccstatusline compatibility in ccstatusline-native.
 
-Reference: ccstatusline 2.2.22
+Reference: ccstatusline 2.2.23
 Config: /Users/me/.config/ccstatusline/settings.json
 Config SHA-256: 0123456789abcdef...
 - `/lines/0/2/type`: unsupported widget `session-cost`; value = `"session-cost"`
@@ -166,7 +175,7 @@ cargo test --locked
 cargo build --release
 ```
 
-Compatibility work uses `ccstatusline@2.2.22` as a behavioral oracle. Run the
+Compatibility work uses `ccstatusline@2.2.23` as a behavioral oracle. Run the
 same config, stdin JSON, environment, working directory, and terminal width
 through both programs and compare raw bytes—not screenshots or visually
 similar text. Tests must cover ordinary output, narrow-width truncation,

@@ -108,6 +108,33 @@ impl StatusInput {
         }
     }
 
+    /// Identifier used by ccstatusline's model-context fallback. Unlike the
+    /// display widget, this trims fields and combines id plus display name.
+    pub fn model_context_identifier(&self) -> Option<String> {
+        match self.root.get("model")? {
+            Value::String(model) => (!model.trim().is_empty()).then(|| model.trim().to_string()),
+            Value::Object(model) => {
+                let id = model
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let display_name = model
+                    .get("display_name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                match (id, display_name) {
+                    (Some(id), Some(display_name)) => Some(format!("{id} {display_name}")),
+                    (Some(id), None) => Some(id.to_string()),
+                    (None, Some(display_name)) => Some(display_name.to_string()),
+                    (None, None) => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     pub fn vim_mode(&self) -> Option<&str> {
         self.nested_str(&["vim", "mode"])
     }

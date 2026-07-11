@@ -1,4 +1,4 @@
-//! Thinking-effort resolution compatible with ccstatusline 2.2.22.
+//! Thinking-effort resolution compatible with ccstatusline 2.2.23.
 
 use crate::status::{StatusEffort, StatusInput};
 use regex::Regex;
