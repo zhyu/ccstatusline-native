@@ -26,6 +26,19 @@ fn executable_script(directory: &std::path::Path, body: &str) -> std::path::Path
     path
 }
 
+fn git(directory: &std::path::Path, args: &[&str]) {
+    let status = Command::new("git")
+        .args(args)
+        .current_dir(directory)
+        .env("GIT_AUTHOR_NAME", "Test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+        .env("GIT_COMMITTER_NAME", "Test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {:?} failed", args);
+}
+
 fn pseudo_terminal(columns: u16) -> (fs::File, fs::File) {
     let mut master_fd = -1;
     let mut slave_fd = -1;
@@ -290,6 +303,185 @@ fn null_live_context_uses_transcript_without_runtime_fallback() {
         format!("{:x}", Sha256::digest(&output.stdout)),
         "58caae96e138b15469aad1a7cc310bfeb7213731cf1e77933edd992bd601d5b1"
     );
+}
+
+#[test]
+fn rich_git_config_and_helper_stay_native() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = temp.path().join("repository");
+    let cache = temp.path().join("cache");
+    fs::create_dir(&repository).unwrap();
+    git(&repository, &["init", "-q", "-b", "main"]);
+    fs::write(repository.join("tracked.txt"), "base\n").unwrap();
+    git(&repository, &["add", "tracked.txt"]);
+    git(&repository, &["commit", "-qm", "initial"]);
+    fs::write(repository.join("staged.txt"), "staged\n").unwrap();
+    git(&repository, &["add", "staged.txt"]);
+    fs::write(repository.join("tracked.txt"), "changed\n").unwrap();
+    fs::write(repository.join("untracked.txt"), "untracked\n").unwrap();
+
+    let config = temp.path().join("settings.json");
+    fs::write(
+        &config,
+        include_bytes!("fixtures/settings-git-summary.json"),
+    )
+    .unwrap();
+    let reference = executable_script(temp.path(), "exit 97");
+    let mut status: Value = serde_json::from_slice(include_bytes!("fixtures/status.json")).unwrap();
+    let repository = repository.to_string_lossy().into_owned();
+    status["cwd"] = Value::String(repository.clone());
+    status["workspace"]["current_dir"] = Value::String(repository);
+    let input = serde_json::to_vec(&status).unwrap();
+
+    let mut helper = Command::new(env!("CARGO_BIN_EXE_ccstatusline-native"))
+        .arg("--git-summary")
+        .env("XDG_CACHE_HOME", &cache)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    helper.stdin.take().unwrap().write_all(&input).unwrap();
+    let helper = helper.wait_with_output().unwrap();
+    assert!(helper.status.success());
+    assert!(helper.stderr.is_empty());
+    assert_eq!(helper.stdout, "⎇ main +1 !1 ?1\n".as_bytes());
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ccstatusline-native"))
+        .args(["--config", config.to_str().unwrap()])
+        .env("CCSTATUSLINE_NATIVE_FALLBACK", reference)
+        .env("CCSTATUSLINE_WIDTH", "200")
+        .env("XDG_CACHE_HOME", cache)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(&input).unwrap();
+    let output = child.wait_with_output().unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("⎇\u{a0}main\u{a0}+1\u{a0}!1\u{a0}?1")
+    );
+}
+
+#[test]
+fn git_summary_preserves_the_base_for_relative_git_environment_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = temp.path().join("repository");
+    let nested = repository.join("nested");
+    fs::create_dir(&repository).unwrap();
+    git(&repository, &["init", "-q", "-b", "main"]);
+    fs::write(repository.join("tracked.txt"), "base\n").unwrap();
+    git(&repository, &["add", "tracked.txt"]);
+    git(&repository, &["commit", "-qm", "initial"]);
+    fs::create_dir(&nested).unwrap();
+    fs::write(repository.join("tracked.txt"), "changed\n").unwrap();
+
+    let input = serde_json::to_vec(&serde_json::json!({ "cwd": nested })).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ccstatusline-native"))
+        .arg("--git-summary")
+        .env("GIT_DIR", "../.git")
+        .env("GIT_WORK_TREE", "..")
+        .env("XDG_CACHE_HOME", temp.path().join("cache"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(&input).unwrap();
+    let output = child.wait_with_output().unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(output.stdout, "⎇ main !1\n".as_bytes());
+}
+
+#[test]
+fn git_summary_timeout_covers_all_git_queries_together() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = temp.path().join("repository");
+    let git_dir = repository.join(".git");
+    let bin = temp.path().join("bin");
+    fs::create_dir_all(&git_dir).unwrap();
+    fs::create_dir(&bin).unwrap();
+    let fake_git = bin.join("git");
+    fs::write(
+        &fake_git,
+        r#"#!/bin/sh
+if [ "$1" = "rev-parse" ]; then
+  /bin/sleep 0.6
+  printf 'true\n%s\n%s/.git\n%s/.git\n' "$FAKE_GIT_ROOT" "$FAKE_GIT_ROOT" "$FAKE_GIT_ROOT"
+  exit 0
+fi
+/bin/sleep 0.6
+printf '# branch.oid 0123456789abcdef\000# branch.head main\000'
+"#,
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&fake_git).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&fake_git, permissions).unwrap();
+
+    let input = serde_json::to_vec(&serde_json::json!({ "cwd": repository })).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ccstatusline-native"))
+        .arg("--git-summary")
+        .env("PATH", bin)
+        .env("GIT_DIR", ".git")
+        .env("FAKE_GIT_ROOT", &repository)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(&input).unwrap();
+    let output = child.wait_with_output().unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(output.stdout, "[Timeout]\n".as_bytes());
+}
+
+#[test]
+fn git_summary_timeout_includes_draining_inherited_stdout() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = temp.path().join("repository");
+    let git_dir = repository.join(".git");
+    let bin = temp.path().join("bin");
+    fs::create_dir_all(&git_dir).unwrap();
+    fs::create_dir(&bin).unwrap();
+    fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    let fake_git = bin.join("git");
+    fs::write(
+        &fake_git,
+        r#"#!/bin/sh
+/bin/sleep 2 &
+printf '# branch.oid 0123456789abcdef\000# branch.head main\000'
+"#,
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&fake_git).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&fake_git, permissions).unwrap();
+
+    let input = serde_json::to_vec(&serde_json::json!({ "cwd": repository })).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ccstatusline-native"))
+        .arg("--git-summary")
+        .env("PATH", bin)
+        .env("XDG_CACHE_HOME", temp.path().join("cache"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(&input).unwrap();
+    let output = child.wait_with_output().unwrap();
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(output.stdout, "[Timeout]\n".as_bytes());
 }
 
 #[test]

@@ -1,0 +1,65 @@
+{
+  "version": 3,
+  "lines": [
+    [
+      {
+        "id": "99d089ce-b014-472a-920e-556b3c57765b",
+        "type": "vim-mode",
+        "backgroundColor": "bgBrightGreen",
+        "metadata": { "format": "word" }
+      },
+      {
+        "id": "9ab9b175-5a32-4672-9101-d456da4099c2",
+        "type": "context-bar",
+        "backgroundColor": "bgBrightWhite"
+      },
+      {
+        "id": "5",
+        "type": "flex-separator",
+        "color": "magenta"
+      },
+      {
+        "id": "1",
+        "type": "model",
+        "color": "cyan",
+        "rawValue": true
+      },
+      {
+        "id": "133afacb-8993-4969-9324-dd76ac8bb464",
+        "type": "thinking-effort",
+        "backgroundColor": "bgMagenta"
+      }
+    ],
+    [
+      {
+        "id": "56181d47-ea4e-4026-bb25-e6f87c9c5ac0",
+        "type": "current-working-dir",
+        "rawValue": true
+      },
+      {
+        "id": "cdc12866-e21c-4633-bed1-917050769dcb",
+        "type": "custom-command",
+        "commandPath": "ccstatusline-native --git-summary",
+        "backgroundColor": "bgBrightBlue"
+      }
+    ]
+  ],
+  "flexMode": "full",
+  "compactThreshold": 60,
+  "colorLevel": 3,
+  "defaultPadding": " ",
+  "inheritSeparatorColors": false,
+  "globalBold": false,
+  "gitCacheTtlSeconds": 5,
+  "minimalistMode": false,
+  "powerline": {
+    "enabled": true,
+    "separators": ["", "", ""],
+    "separatorInvertBackground": [false, false, false],
+    "startCaps": ["", "", ""],
+    "endCaps": ["", "", ""],
+    "theme": "nord",
+    "autoAlign": false,
+    "continueThemeAcrossLines": false
+  }
+}

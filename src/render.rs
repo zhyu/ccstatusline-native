@@ -399,4 +399,35 @@ mod tests {
             assert_eq!(actual, expected, "oracle mismatch at width {width}");
         }
     }
+
+    #[test]
+    fn rich_git_intrinsic_matches_pinned_custom_command_oracle() {
+        let settings: Settings =
+            serde_json::from_str(include_str!("../tests/fixtures/settings-git-summary.json"))
+                .unwrap();
+        let status = StatusInput::parse(include_bytes!("../tests/fixtures/status.json")).unwrap();
+        let cases = [
+            (
+                80,
+                "66f2583e26ffd5aeae8121344c8a934fa3e4b8892563c28ae67138d43b3f3ebc",
+            ),
+            (
+                131,
+                "c33bf207ab26ea22b48f416c9fa9753b32f904fc61e4a7fbdc44a8129f3a0766",
+            ),
+            (
+                200,
+                "03799acc335e69780fbb4555de82c8d4f97a1629907583c645c569a81f4433f0",
+            ),
+        ];
+
+        for (width, expected) in cases {
+            let output = render(&settings, &status, Some(width)).unwrap();
+            let actual = format!("{:x}", Sha256::digest(output.as_bytes()));
+            assert_eq!(
+                actual, expected,
+                "rich Git oracle mismatch at width {width}"
+            );
+        }
+    }
 }

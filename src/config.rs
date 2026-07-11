@@ -293,6 +293,17 @@ pub fn support_report(config: &LoadedConfig) -> SupportReport {
             Some(Value::from(settings.color_level)),
         ));
     }
+    let uses_git_summary = settings.lines.iter().flatten().any(|item| {
+        item.kind == "custom-command"
+            && item.command_path.as_deref() == Some(crate::git::GIT_SUMMARY_COMMAND)
+    });
+    if uses_git_summary && settings.git_cache_ttl_seconds != 5.0 {
+        issues.push(issue(
+            "/gitCacheTtlSeconds",
+            "the native fast path currently implements only the five-second Git cache used by the intrinsic helper",
+            serde_json::Number::from_f64(settings.git_cache_ttl_seconds).map(Value::Number),
+        ));
+    }
     if settings.global_bold {
         issues.push(issue(
             "/globalBold",
@@ -549,6 +560,7 @@ fn validate_widget(
         "thinking-effort",
         "current-working-dir",
         "git-branch",
+        "custom-command",
     ];
     if !SUPPORTED.contains(&item.kind.as_str()) {
         issues.push(issue(
@@ -613,30 +625,60 @@ fn validate_widget(
         "custom symbols are not implemented",
         &item.custom_symbol,
     );
-    reject_private_option(
-        issues,
-        &format!("{base}/commandPath"),
-        "custom commands are not implemented",
-        &item.command_path,
-    );
+    if item.kind == "custom-command" {
+        if item.command_path.as_deref() != Some(crate::git::GIT_SUMMARY_COMMAND) {
+            issues.push(issue(
+                format!("{base}/commandPath"),
+                format!(
+                    "only the intrinsic `{}` custom command is implemented",
+                    crate::git::GIT_SUMMARY_COMMAND
+                ),
+                None,
+            ));
+        }
+    } else {
+        reject_private_option(
+            issues,
+            &format!("{base}/commandPath"),
+            "custom commands are not implemented",
+            &item.command_path,
+        );
+    }
     reject_option(
         issues,
         &format!("{base}/maxWidth"),
         "per-widget truncation is not implemented",
         &item.max_width,
     );
-    reject_option(
-        issues,
-        &format!("{base}/preserveColors"),
-        "preserved child colors are not implemented",
-        &item.preserve_colors,
-    );
-    reject_option(
-        issues,
-        &format!("{base}/timeout"),
-        "widget command timeouts are not implemented",
-        &item.timeout,
-    );
+    if item.kind == "custom-command" {
+        if item.preserve_colors == Some(true) {
+            issues.push(issue(
+                format!("{base}/preserveColors"),
+                "preserved child colors are not implemented for the intrinsic Git summary",
+                Some(Value::Bool(true)),
+            ));
+        }
+        if item.timeout.is_some_and(|timeout| timeout != 1000) {
+            issues.push(issue(
+                format!("{base}/timeout"),
+                "the intrinsic Git summary supports only the ccstatusline default timeout of 1000ms",
+                item.timeout.map(Value::from),
+            ));
+        }
+    } else {
+        reject_option(
+            issues,
+            &format!("{base}/preserveColors"),
+            "preserved child colors are not implemented",
+            &item.preserve_colors,
+        );
+        reject_option(
+            issues,
+            &format!("{base}/timeout"),
+            "widget command timeouts are not implemented",
+            &item.timeout,
+        );
+    }
     for key in item.extra.keys() {
         issues.push(issue(
             format!("{base}/{key}"),
@@ -649,6 +691,13 @@ fn validate_widget(
         issues.push(issue(
             format!("{base}/rawValue"),
             "rawValue is invalid for flex separators",
+            item.raw_value.map(Value::Bool),
+        ));
+    }
+    if item.kind == "custom-command" && item.raw_value.is_some() {
+        issues.push(issue(
+            format!("{base}/rawValue"),
+            "rawValue must be absent for the intrinsic Git summary",
             item.raw_value.map(Value::Bool),
         ));
     }
@@ -723,14 +772,86 @@ mod tests {
     }
 
     #[test]
+    fn requires_the_intrinsic_helpers_five_second_git_cache() {
+        let mut config = current_settings();
+        {
+            let item = &mut config.settings.lines[1][1];
+            item.kind = "custom-command".into();
+            item.command_path = Some(crate::git::GIT_SUMMARY_COMMAND.into());
+        }
+        config.settings.git_cache_ttl_seconds = 1.0;
+        let report = support_report(&config);
+        assert!(!report.supported);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.path == "/gitCacheTtlSeconds")
+        );
+
+        let mut branch_only = current_settings();
+        branch_only.settings.git_cache_ttl_seconds = 1.0;
+        assert!(support_report(&branch_only).supported);
+    }
+
+    #[test]
     fn reports_every_unsupported_widget() {
         let mut config = current_settings();
         config.settings.lines[0][0].kind = "session-cost".into();
-        config.settings.lines[1][0].kind = "custom-command".into();
+        config.settings.lines[1][1].kind = "custom-command".into();
         let report = support_report(&config);
         assert_eq!(report.issues.len(), 2);
         assert!(report.markdown().contains("session-cost"));
-        assert!(report.markdown().contains("custom-command"));
+        assert!(report.markdown().contains("/lines/1/1/commandPath"));
+    }
+
+    #[test]
+    fn supports_only_the_intrinsic_git_summary_custom_command() {
+        let mut config = current_settings();
+        {
+            let item = &mut config.settings.lines[1][1];
+            item.kind = "custom-command".into();
+            item.command_path = Some(crate::git::GIT_SUMMARY_COMMAND.into());
+        }
+        assert!(support_report(&config).supported);
+
+        config.settings.lines[1][1].command_path = Some("printf arbitrary-command".into());
+        let report = support_report(&config);
+        assert!(!report.supported);
+        assert_eq!(report.issues[0].path, "/lines/1/1/commandPath");
+        assert!(!report.markdown().contains("printf arbitrary-command"));
+    }
+
+    #[test]
+    fn intrinsic_git_summary_accepts_only_compatible_command_options() {
+        let mut config = current_settings();
+        {
+            let item = &mut config.settings.lines[1][1];
+            item.kind = "custom-command".into();
+            item.command_path = Some(crate::git::GIT_SUMMARY_COMMAND.into());
+            item.preserve_colors = Some(false);
+            item.timeout = Some(1000);
+        }
+        assert!(support_report(&config).supported);
+
+        {
+            let item = &mut config.settings.lines[1][1];
+            item.raw_value = Some(false);
+            item.max_width = Some(80);
+            item.preserve_colors = Some(true);
+            item.timeout = Some(999);
+            item.metadata.insert("future".into(), "value".into());
+        }
+        let paths = support_report(&config)
+            .issues
+            .into_iter()
+            .map(|issue| issue.path)
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&"/lines/1/1/rawValue".into()));
+        assert!(paths.contains(&"/lines/1/1/maxWidth".into()));
+        assert!(paths.contains(&"/lines/1/1/preserveColors".into()));
+        assert!(paths.contains(&"/lines/1/1/timeout".into()));
+        assert!(paths.contains(&"/lines/1/1/metadata/future".into()));
     }
 
     #[test]

@@ -25,7 +25,8 @@ Unknown configuration is unsupported until its semantics are understood.
   truncation.
 - `src/terminal.rs`: width overrides, direct TTY probing, ancestor discovery,
   and true-headless behavior.
-- `src/git.rs` and `src/effort.rs`: data providers used by widgets.
+- `src/git.rs` and `src/effort.rs`: data providers used by widgets. Git owns
+  both the branch-only fast path and the shared rich snapshot/cache.
 - `src/fallback.rs`: pinned reference invocation and stdin/stdout preservation.
 - `src/app.rs`: CLI dispatch, warnings, TUI delegation, and renderer selection.
 - `tests/fixtures/`: checked-in nonsensitive configs, status inputs, and golden
@@ -47,11 +48,20 @@ implementation. The initial widgets are:
 - `thinking-effort`
 - `current-working-dir`
 - `git-branch`
+- the exact `custom-command` intrinsic
+  `ccstatusline-native --git-summary`
 
 Support is option-specific. A widget name being present in the list does not
 make every field or metadata value valid. In particular, do not weaken checks
-for generic bold/dim/merge/hide/custom-command behavior or unknown fields until
-the corresponding rendering path is implemented.
+for generic bold/dim/merge/hide behavior, arbitrary custom commands, or unknown
+fields until the corresponding rendering path is implemented.
+
+The Git-summary exception is deliberately narrow. `commandPath` must equal
+`ccstatusline-native --git-summary`; `timeout` may be absent or `1000`, and
+`preserveColors` may be absent or `false`. `maxWidth`, `rawValue`, `metadata`,
+and other custom-command-specific behavior remain unsupported; an empty
+metadata object is equivalent to omission. Keep the validator, README table,
+fixture, and intrinsic dispatch synchronized.
 
 ## Adding a widget or option
 
@@ -92,6 +102,20 @@ If matching requires a large cross-cutting subsystem, keep the setting
 unsupported and document the reason rather than shipping a plausible-looking
 approximation.
 
+For a new rich Git field, extend the shared `GitSnapshot` instead of adding a
+Git or shell process per displayed value. Preserve the single porcelain-v2
+query, byte-oriented `-z` parser, field order, and zero-hiding behavior unless a
+new documented contract explicitly changes them. Add parser fixtures for
+renames, partial staging, conflicts, detached and unborn HEAD, linked
+worktrees, no upstream, and stale local tracking refs as applicable. Active
+operation markers are worktree-specific and must remain uncached.
+
+The compact Git summary is an owned helper-output contract presented through
+ccstatusline's standard `custom-command` widget. Its compatibility check is
+therefore the reference renderer executing the exact helper, not an attempt to
+compose several upstream Git widgets. New first-class ccstatusline widgets must
+still follow the normal pinned-oracle workflow above.
+
 ## Output and fallback rules
 
 - stdout is a protocol channel. A successful render contains status-line bytes
@@ -103,6 +127,18 @@ approximation.
 - Invoke fallback with an argument vector, not through a shell.
 - Keep the package version pinned in every fallback path and in compatibility
   reports.
+- Treat `--git-summary` as a terminal helper action: it consumes status JSON,
+  prints one plain Git-summary line, and must never load the ccstatusline config
+  or invoke fallback. Native rendering of the exact custom command calls the
+  same provider in-process. These two rules prevent recursion when the
+  JavaScript fallback executes the helper.
+- Cache rich Git state by normalized worktree root and worktree-specific Git
+  directory. Invalidate immediately when `HEAD` or the index changes, apply
+  the exact helper-owned five-second TTL to state not represented by those
+  files, do not cache failures, and read operation markers fresh. Until the
+  helper can receive another TTL without loading config, the validator must
+  reject `gitCacheTtlSeconds` values other than `5` for configurations that
+  contain the intrinsic.
 - Never invent a missing runtime datum. Implement the pinned reference's tested
   absent-data behavior when it has one; otherwise delegate. Terminal width is a
   defined example: after every probe fails, render with no effective width,

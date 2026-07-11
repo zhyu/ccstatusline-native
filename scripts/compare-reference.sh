@@ -34,8 +34,15 @@ if [ ! -x "$native" ]; then
   exit 2
 fi
 
+native_directory=$(CDPATH= cd "$(dirname "$native")" && pwd)
+native=$native_directory/$(basename "$native")
+
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/ccstatusline-native-compare.XXXXXX")
 trap 'rm -rf "$temporary"' EXIT HUP INT TERM
+mkdir "$temporary/candidate-bin"
+ln -s "$native" "$temporary/candidate-bin/ccstatusline-native"
+PATH="$temporary/candidate-bin:$PATH"
+export PATH
 
 run_reference() {
   width=$1

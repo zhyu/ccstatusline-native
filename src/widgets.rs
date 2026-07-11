@@ -22,6 +22,11 @@ pub fn render(
         "thinking-effort" => Ok(Some(render_thinking_effort(item, status))),
         "current-working-dir" => Ok(render_cwd(item, status)),
         "git-branch" => Ok(Some(render_git_branch(item, status, git))),
+        "custom-command"
+            if item.command_path.as_deref() == Some(crate::git::GIT_SUMMARY_COMMAND) =>
+        {
+            Ok(Some(render_git_summary(status, git)))
+        }
         kind => Err(RenderError::NeedsFallback(format!(
             "widget `{kind}` passed capability validation unexpectedly"
         ))),
@@ -167,17 +172,33 @@ fn render_cwd(item: &WidgetItem, status: &StatusInput) -> Option<String> {
 }
 
 fn render_git_branch(item: &WidgetItem, status: &StatusInput, git: &mut GitResolver) -> String {
-    let cwd = status
-        .git_cwd()
-        .map(Path::new)
-        .map(ToOwned::to_owned)
-        .or_else(|| env::current_dir().ok())
-        .unwrap_or_default();
+    let cwd = git_cwd(status);
     match git.branch(&cwd) {
         Some(branch) if item.raw_value.unwrap_or(false) => branch,
         Some(branch) => format!("⎇ {branch}"),
         None => "⎇ no git".to_string(),
     }
+}
+
+/// Render the one custom command deliberately implemented as a native
+/// intrinsic. `--git-summary` reuses this function so fallback execution and
+/// direct native rendering cannot drift apart.
+pub(crate) fn render_git_summary(status: &StatusInput, git: &mut GitResolver) -> String {
+    match git.summary(&git_cwd(status)) {
+        Ok(Some(snapshot)) => snapshot.compact(),
+        Ok(None) => "⎇ no git".to_string(),
+        Err(error) if error.is_timeout() => "[Timeout]".to_string(),
+        Err(_) => "[Exit: 1]".to_string(),
+    }
+}
+
+fn git_cwd(status: &StatusInput) -> std::path::PathBuf {
+    status
+        .git_cwd()
+        .map(Path::new)
+        .map(ToOwned::to_owned)
+        .or_else(|| env::current_dir().ok())
+        .unwrap_or_default()
 }
 
 fn remove_parenthesized_suffix(model: &str) -> &str {
@@ -417,5 +438,13 @@ mod tests {
         assert_eq!(format_tokens(1_250_000.0, 0), "1.3M");
         assert_eq!(format_tokens(2_150_000.0, 0), "2.1M");
         assert_eq!(format_tokens(2_550_000.0, 0), "2.5M");
+    }
+
+    #[test]
+    fn intrinsic_git_summary_handles_a_non_repository_in_process() {
+        let directory = tempfile::tempdir().unwrap();
+        let status = status(json!({ "cwd": directory.path() }));
+        let mut git = GitResolver::new(0.0);
+        assert_eq!(render_git_summary(&status, &mut git), "⎇ no git");
     }
 }

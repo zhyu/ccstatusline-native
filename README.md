@@ -91,6 +91,8 @@ The compatibility validator in the current binary is authoritative. The
 initial fast path supports version 3 settings with:
 
 - `flexMode: "full"` and truecolor `colorLevel: 3`;
+- `gitCacheTtlSeconds: 5` when the rich Git intrinsic is selected, matching
+  its fallback helper;
 - Powerline enabled with the `nord` theme;
 - configured separators, inverted separator flags, start caps, and end caps;
 - `autoAlign: false` and `continueThemeAcrossLines: false`; and
@@ -108,6 +110,7 @@ These widgets are implemented:
 | `thinking-effort` | Live status value with transcript/settings/default resolution and `rawValue` behavior |
 | `current-working-dir` | Current directory and `rawValue` behavior |
 | `git-branch` | Repository discovery, branch/no-git rendering, and `rawValue` behavior |
+| `custom-command` | Only the intrinsic `commandPath: "ccstatusline-native --git-summary"`; `timeout` may be absent or `1000`, and `preserveColors` may be absent or `false` |
 
 `context-bar` prefers Claude Code's live `context_window` metrics. When those
 metrics are temporarily null and a nonempty `transcript_path` is present, it
@@ -118,13 +121,83 @@ otherwise the 2.2.23 `CCSTATUSLINE_CONTEXT_SIZE_FALLBACK` override or the 200k
 default is used. These documented startup and post-compaction states stay on the
 native path.
 
+### Rich Git summary
+
+The checked-in rich-Git layout uses one Powerline segment rather than placing a
+separator between every count:
+
+```json
+{
+  "type": "custom-command",
+  "commandPath": "ccstatusline-native --git-summary",
+  "backgroundColor": "bgBrightBlue"
+}
+```
+
+For example, the segment can render:
+
+```text
+⎇ feature/demo rebase ~1 +1 !1 ?1 ⇡2 ⇣1 *3
+```
+
+Fields are ordered by usefulness during agent-driven work: repository identity,
+active operation, conflicts, staged changes, unstaged changes, untracked
+entries, commits ahead of upstream, commits behind upstream, and stashes. Zero
+counts and missing upstream data are omitted. The symbols are:
+
+| Output | Meaning |
+| --- | --- |
+| `⎇ branch` | Attached or unborn branch |
+| `@1234abcd` | Detached HEAD, using the first eight object-ID characters |
+| `merge`, `rebase`, `cherry-pick`, `revert`, `bisect` | Active repository operation |
+| `~N` | Unmerged/conflicting entries |
+| `+N` | Entries with staged changes |
+| `!N` | Entries with unstaged changes |
+| `?N` | Untracked entries reported by Git's normal untracked scan |
+| `⇡N` / `⇣N` | Commits ahead of / behind the locally stored upstream ref |
+| `*N` | Stashes |
+
+An entry with both index and worktree changes contributes to both `+N` and
+`!N`; an unmerged entry contributes only to `~N`. Outside a worktree, the
+segment preserves the existing `⎇ no git` display. Upstream counts never fetch
+from a remote, so they describe the last locally fetched tracking ref.
+
+On the native path, the exact command above is an intrinsic: it reads the same
+`GitSnapshot` provider as the renderer without launching a shell or a nested
+`ccstatusline-native` process. An uncached snapshot comes from one byte-oriented
+query:
+
+```text
+git status --porcelain=v2 --branch --ahead-behind --show-stash --untracked-files=normal -z
+```
+
+The snapshot cache is isolated by normalized worktree root and worktree-specific
+Git directory. Changes to `HEAD` or the index invalidate it immediately; the
+supported five-second TTL bounds working-tree, untracked, upstream, and stash
+staleness. Operation markers are inexpensive and are read fresh on every render.
+
+The `--git-summary` CLI action exists for compatibility when another unsupported
+setting delegates the whole layout to JavaScript ccstatusline. The reference
+`custom-command` widget can invoke `ccstatusline-native --git-summary` with the
+Claude status JSON on stdin. This helper action renders only the Git segment: it
+does not load the ccstatusline configuration and cannot invoke fallback, so the
+delegated path cannot recurse.
+
+This exception does not enable arbitrary custom commands. The command path must
+match exactly; `timeout` is limited to the reference default of `1000`,
+`preserveColors` is limited to `false`, `maxWidth` and `rawValue` must be absent,
+and `metadata` must be absent or empty. Any other command or option delegates to
+the pinned reference implementation. See
+[`tests/fixtures/settings-git-summary.json`](tests/fixtures/settings-git-summary.json)
+for the complete two-line configuration.
+
 The renderer also reproduces the reference Powerline color progression,
 padding, non-breaking spaces, terminal-width truncation, and multiline output
 for this surface. Rare Unicode composition classes whose width differs between
 Rust and ccstatusline's JavaScript width engine delegate to the reference.
-Generic widget behaviors such as bold, dim, merge, hide,
-custom symbols/characters, per-widget truncation, preserved command colors,
-and command timeouts are not yet implemented. Unsupported widget types and
+Generic widget behaviors such as bold, dim, merge, hide, custom
+symbols/characters, per-widget truncation, preserved command colors, and
+arbitrary command execution are not implemented. Unsupported widget types and
 metadata force fallback.
 
 Check a configuration without rendering:
@@ -161,8 +234,20 @@ the current two-line configuration measured a 1.93 ms median for
 `ccstatusline-native` and 79.63 ms for the locally built `ccstatusline` 2.2.22
 binary. Both produced the same 821 output bytes (SHA-256
 `f475e6d5a09f5f250b23a85c466f68612c325e35eb49e4d0f5df20783d0a9ab3`).
-Treat those numbers as one-machine startup measurements, not a general
-benchmark guarantee.
+
+For the rich Git configuration, 60 cache-miss and 200 cache-hit runs measured
+the full native render as follows (median / p95):
+
+| Repository | Cache miss | Cache hit |
+| --- | ---: | ---: |
+| Small dirty repository | 9.06 / 10.43 ms | 2.07 / 2.35 ms |
+| This dotfiles repository | 18.07 / 19.50 ms | 2.09 / 2.35 ms |
+
+A miss launches exactly one porcelain-v2 Git process; a hit launches none. The
+corrected branch-only path measured about 2.0 ms with no Git child, so a warm
+rich snapshot adds roughly 0.05 ms. The ccstatusline 2.2.23 custom-command path
+measured about 110–111 ms median in the same run. Treat all of these as
+one-machine startup measurements, not general benchmark guarantees.
 
 ## Development
 
@@ -187,6 +272,10 @@ fixture at the widths used by the regression test:
 ```sh
 scripts/compare-reference.sh \
   tests/fixtures/settings.json \
+  tests/fixtures/status.json
+
+scripts/compare-reference.sh \
+  tests/fixtures/settings-git-summary.json \
   tests/fixtures/status.json
 ```
 
