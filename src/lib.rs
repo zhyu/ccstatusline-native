@@ -6,6 +6,7 @@ mod fallback;
 mod git;
 mod render;
 mod status;
+mod terminal;
 mod widgets;
 
 pub use app::run;

@@ -22,12 +22,14 @@ Unknown configuration is unsupported until its semantics are understood.
 - `src/widgets.rs`: widget values.
 - `src/render.rs` and `src/ansi.rs`: layout, Powerline styling, width, and
   truncation.
+- `src/terminal.rs`: width overrides, direct TTY probing, ancestor discovery,
+  and true-headless behavior.
 - `src/git.rs` and `src/effort.rs`: data providers used by widgets.
 - `src/fallback.rs`: pinned reference invocation and stdin/stdout preservation.
 - `src/app.rs`: CLI dispatch, warnings, TUI delegation, and renderer selection.
 - `tests/fixtures/`: checked-in nonsensitive configs, status inputs, and golden
   outputs.
-- `.github/workflows/`: checks, release publication, and tap-token verification.
+- `.github/workflows/`: Ubuntu/macOS checks and release publication.
 
 Keep generated packages, downloaded upstream sources, benchmark output, and
 other reproducible artifacts out of the repository.
@@ -100,10 +102,18 @@ approximation.
 - Invoke fallback with an argument vector, not through a shell.
 - Keep the package version pinned in every fallback path and in compatibility
   reports.
-- A missing runtime datum that the native implementation cannot derive safely
-  is a reason to delegate, not to invent a value.
+- Never invent a missing runtime datum. Implement the pinned reference's tested
+  absent-data behavior when it has one; otherwise delegate. Terminal width is a
+  defined example: after every probe fails, render with no effective width,
+  one-space Powerline flex separators, and no width truncation.
 - Unicode text that `ansi::requires_reference_width` classifies as divergent
   must delegate unless differential tests prove and implement matching width.
+
+Terminal-width changes must preserve this order: valid `CCSTATUSLINE_WIDTH`,
+valid exported `COLUMNS`, direct standard-stream or `/dev/tty` ioctl, up to
+eight ancestor TTYs, then `tput`. Invalid overrides fall through. Never place a
+TTY name into a shell command. Keep PTY integration coverage for piped stdin,
+all-piped stdio with a TTY-owning ancestor, and a genuinely headless process.
 
 ## Verification
 

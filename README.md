@@ -60,9 +60,20 @@ without piped input, it delegates to the reference TUI and validates the saved
 configuration after the TUI exits, so newly selected unsupported widgets are
 reported immediately in the terminal.
 
-Terminal width is read from `CCSTATUSLINE_WIDTH`, then `COLUMNS`. If neither is
-available, rendering delegates to ccstatusline so its more expensive terminal
-probe can preserve the layout instead of guessing.
+Terminal width needs no command-line setup. A valid `CCSTATUSLINE_WIDTH` remains
+an explicit override, followed by the exported `COLUMNS` value that
+[Claude Code 2.1.153 and newer provide to status commands](https://code.claude.com/docs/en/statusline#how-status-lines-work).
+For direct shell use—where zsh's
+visible `COLUMNS` parameter is usually not exported—the binary probes stdout,
+stderr, stdin, `/dev/tty`, and up to eight ancestor processes for the real PTY.
+The common paths use a native terminal ioctl; the ancestor walk exists for
+older Claude Code versions that capture every standard stream.
+
+If direct and ancestor probes fail, the binary tries ccstatusline's final
+`tput cols` fallback. If that also yields no usable width, the native renderer
+uses ccstatusline's tested unknown-width behavior: flex separators become one
+space and width-based truncation is disabled. Terminal-width discovery alone
+never triggers the JavaScript fallback.
 
 Reference lookup is intentionally simple and pinned:
 
@@ -178,9 +189,9 @@ full capability workflow.
 
 ## Releases
 
-CI runs formatting, clippy, and tests on pushes and pull requests. The release
-workflow reruns those checks before it can build Apple Silicon macOS and x86-64
-Linux archives.
+CI runs formatting, clippy, and tests on Ubuntu and macOS for pushes and pull
+requests. The release workflow reruns those checks before it can build Apple
+Silicon macOS and x86-64 Linux archives.
 
 - Every successful `main` build replaces the GitHub `nightly` prerelease.
 - Publishing a GitHub release builds the same archive from the release tag and

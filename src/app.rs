@@ -1,7 +1,6 @@
 use crate::config::{self, SupportReport};
 use crate::render;
 use crate::status::StatusInput;
-use std::env;
 use std::ffi::OsString;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
@@ -165,14 +164,8 @@ fn run_renderer(config_path: &std::path::Path) -> ExitCode {
             return delegate_render(config_path, &stdin);
         }
     };
-    let Some(width) = terminal_width() else {
-        warn_fallback(
-            "terminal width is unavailable from CCSTATUSLINE_WIDTH or COLUMNS",
-            None,
-        );
-        return delegate_render(config_path, &stdin);
-    };
-    match render::render(&loaded.settings, &status, Some(width)) {
+    let width = crate::terminal::width();
+    match render::render(&loaded.settings, &status, width) {
         Ok(output) => {
             if let Err(error) = io::stdout().write_all(output.as_bytes()) {
                 eprintln!(
@@ -276,32 +269,6 @@ fn print_unsupported_report_stderr(report: &SupportReport) {
     );
 }
 
-fn terminal_width() -> Option<usize> {
-    if let Ok(override_width) = env::var("CCSTATUSLINE_WIDTH") {
-        return parse_positive_decimal_prefix(&override_width);
-    }
-    env::var("COLUMNS")
-        .ok()
-        .and_then(|columns| parse_positive_decimal_prefix(&columns))
-}
-
-fn parse_positive_decimal_prefix(value: &str) -> Option<usize> {
-    let value = value.trim_start();
-    let (negative, digits_source) = match value.as_bytes().first() {
-        Some(b'+') => (false, &value[1..]),
-        Some(b'-') => (true, &value[1..]),
-        _ => (false, value),
-    };
-    if negative {
-        return None;
-    }
-    let digit_count = digits_source.bytes().take_while(u8::is_ascii_digit).count();
-    digits_source[..digit_count]
-        .parse::<usize>()
-        .ok()
-        .filter(|width| *width > 0)
-}
-
 fn exit_code(status: ExitStatus) -> ExitCode {
     ExitCode::from(status.code().unwrap_or(1).clamp(1, 255) as u8)
 }
@@ -316,18 +283,4 @@ Options:\n  --config PATH       Override ~/.config/ccstatusline/settings.json\n 
         name = crate::NAME,
         reference = crate::REFERENCE_CCSTATUSLINE_VERSION,
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_width_like_javascript_parse_int() {
-        assert_eq!(parse_positive_decimal_prefix("120garbage"), Some(120));
-        assert_eq!(parse_positive_decimal_prefix("  +80px"), Some(80));
-        assert_eq!(parse_positive_decimal_prefix("0"), None);
-        assert_eq!(parse_positive_decimal_prefix("-10"), None);
-        assert_eq!(parse_positive_decimal_prefix("garbage"), None);
-    }
 }

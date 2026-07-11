@@ -31,7 +31,7 @@ impl Runner {
     fn command(&self, config: &Path) -> Command {
         let mut command = Command::new(&self.program);
         command.args(&self.prefix_args).arg("--config").arg(config);
-        bridge_width_environment(&mut command);
+        bridge_width_environment(&mut command, crate::terminal::width());
         command
     }
 }
@@ -150,13 +150,9 @@ fn find_program(name: impl AsRef<OsStr>) -> Option<PathBuf> {
     })
 }
 
-fn bridge_width_environment(command: &mut Command) {
-    if env::var_os("CCSTATUSLINE_WIDTH").is_none() {
-        if let Ok(columns) = env::var("COLUMNS") {
-            if columns.parse::<usize>().is_ok_and(|value| value > 0) {
-                command.env("CCSTATUSLINE_WIDTH", columns);
-            }
-        }
+fn bridge_width_environment(command: &mut Command, width: Option<usize>) {
+    if let Some(width) = width {
+        command.env("CCSTATUSLINE_WIDTH", width.to_string());
     }
 }
 
