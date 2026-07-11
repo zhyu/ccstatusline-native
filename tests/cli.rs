@@ -35,6 +35,7 @@ fn pseudo_terminal(columns: u16) -> (fs::File, fs::File) {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
+    let size_pointer = std::ptr::addr_of_mut!(size);
     // SAFETY: openpty receives valid output pointers, no terminal name buffer,
     // default attributes, and a fully initialized window size.
     let result = unsafe {
@@ -43,7 +44,7 @@ fn pseudo_terminal(columns: u16) -> (fs::File, fs::File) {
             &mut slave_fd,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut size,
+            size_pointer,
         )
     };
     assert_eq!(
@@ -356,8 +357,12 @@ fn ancestor_terminal_helper() {
     assert_ne!(unsafe { libc::setsid() }, -1, "setsid failed");
     // SAFETY: stdin is the PTY slave supplied by the parent test. This helper
     // is now a session leader without a controlling terminal.
+    #[cfg(target_os = "linux")]
+    let set_controlling_terminal = libc::TIOCSCTTY;
+    #[cfg(not(target_os = "linux"))]
+    let set_controlling_terminal = libc::TIOCSCTTY.into();
     assert_ne!(
-        unsafe { libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY.into(), 0) },
+        unsafe { libc::ioctl(libc::STDIN_FILENO, set_controlling_terminal, 0) },
         -1,
         "TIOCSCTTY failed"
     );
