@@ -6,7 +6,7 @@ deliberately limited subset of `ccstatusline` configuration with native startup
 speed and delegates everything else to the reference implementation.
 
 The project is built around one safety rule: a configuration is either known to
-match `ccstatusline@2.2.23`, or it is rejected by the fast path. Unsupported
+match `ccstatusline@2.2.30`, or it is rejected by the fast path. Unsupported
 settings are never silently approximated.
 
 ## Install
@@ -78,8 +78,8 @@ never triggers the JavaScript fallback.
 Reference lookup is intentionally simple and pinned:
 
 1. an installed `ccstatusline` executable;
-2. `bunx -y ccstatusline@2.2.23`; then
-3. `npx --yes ccstatusline@2.2.23`.
+2. `bunx -y ccstatusline@2.2.30`; then
+3. `npx --yes ccstatusline@2.2.30`.
 
 `CCSTATUSLINE_NATIVE_FALLBACK` can name an explicit reference executable. A
 fallback may therefore need Bun/npm and network access when `ccstatusline` is
@@ -90,7 +90,8 @@ not already installed or cached; the native fast path does not.
 The compatibility validator in the current binary is authoritative. The
 initial fast path supports version 3 settings with:
 
-- `flexMode: "full"` and truecolor `colorLevel: 3`;
+- `flexMode: "full"` (the reference default since 2.2.30, so an absent
+  `flexMode` also matches) and truecolor `colorLevel: 3`;
 - `gitCacheTtlSeconds: 5` when the rich Git intrinsic is selected, matching
   its fallback helper;
 - Powerline enabled with the `nord` theme;
@@ -98,6 +99,11 @@ initial fast path supports version 3 settings with:
 - `autoAlign: false` and `continueThemeAcrossLines: false`; and
 - no global bold/minimalist mode, global color overrides, update message, or
   unknown settings.
+
+The reference TUI writes version 4 settings once it saves (adding
+`defaultPaddingSide`, cache TTLs, number formats, and `metadata.hide` lists).
+Those files delegate to the reference unchanged: the fast path stays on the
+verified version 3 surface instead of guessing at the new fields.
 
 These widgets are implemented:
 
@@ -115,11 +121,13 @@ These widgets are implemented:
 `context-bar` prefers Claude Code's live `context_window` metrics. When those
 metrics are temporarily null and a nonempty `transcript_path` is present, it
 derives context length from the latest eligible main-chain transcript usage row.
-Missing, unreadable, and empty transcripts have zero context, matching the
-reference. Model labels such as `(1M context)` supply a missing window size;
-otherwise the 2.2.23 `CCSTATUSLINE_CONTEXT_SIZE_FALLBACK` override or the 200k
-default is used. These documented startup and post-compaction states stay on the
-native path.
+After a `compact_boundary` record, pre-compaction usage no longer counts: the
+first post-compaction turn wins, then the boundary's `postTokens`, then zero,
+matching the reference fix in 2.2.25. Missing, unreadable, and empty
+transcripts have zero context. Model labels such as `(1M context)` supply a
+missing window size; otherwise the 2.2.30 `CCSTATUSLINE_CONTEXT_SIZE_FALLBACK`
+override or the 200k default is used. These documented startup and
+post-compaction states stay on the native path.
 
 ### Rich Git summary
 
@@ -218,7 +226,7 @@ The report identifies every unsupported value by JSON path, for example:
 ```text
 Implement ccstatusline compatibility in ccstatusline-native.
 
-Reference: ccstatusline 2.2.23
+Reference: ccstatusline 2.2.30
 Config: /Users/me/.config/ccstatusline/settings.json
 Config SHA-256: 0123456789abcdef...
 - `/lines/0/2/type`: unsupported widget `session-cost`; value = `"session-cost"`
@@ -245,9 +253,10 @@ the full native render as follows (median / p95):
 
 A miss launches exactly one porcelain-v2 Git process; a hit launches none. The
 corrected branch-only path measured about 2.0 ms with no Git child, so a warm
-rich snapshot adds roughly 0.05 ms. The ccstatusline 2.2.23 custom-command path
-measured about 110–111 ms median in the same run. Treat all of these as
-one-machine startup measurements, not general benchmark guarantees.
+rich snapshot adds roughly 0.05 ms. The ccstatusline 2.2.30 custom-command path
+measured about 231 ms median over 25 warm-cache runs on the same machine, up
+from about 110 ms with 2.2.23. Treat all of these as one-machine startup
+measurements, not general benchmark guarantees.
 
 ## Development
 
@@ -260,7 +269,7 @@ cargo test --locked
 cargo build --release
 ```
 
-Compatibility work uses `ccstatusline@2.2.23` as a behavioral oracle. Run the
+Compatibility work uses `ccstatusline@2.2.30` as a behavioral oracle. Run the
 same config, stdin JSON, environment, working directory, and terminal width
 through both programs and compare raw bytes—not screenshots or visually
 similar text. Tests must cover ordinary output, narrow-width truncation,
@@ -277,7 +286,15 @@ scripts/compare-reference.sh \
 scripts/compare-reference.sh \
   tests/fixtures/settings-git-summary.json \
   tests/fixtures/status.json
+
+scripts/compare-reference.sh \
+  tests/fixtures/settings.json \
+  tests/fixtures/status-transcript-compact.json
 ```
+
+The script hands the reference a scratch copy of the config: ccstatusline
+migrates and rewrites the file it is pointed at (v3 becomes v4), which must
+never touch a checked-in fixture.
 
 The upstream source is not vendored. Most changes should be derived from
 oracle output; if an edge case cannot be disambiguated that way, download the

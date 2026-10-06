@@ -13,7 +13,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub const GIT_SUMMARY_COMMAND: &str = "ccstatusline-native --git-summary";
 
 const SUMMARY_CACHE_VERSION: u8 = 1;
-const GIT_TIMEOUT: Duration = Duration::from_secs(1);
+// ccstatusline 2.2.30 bounds every Git invocation at five seconds so a stalled
+// Git (slow network filesystem, hung credential helper) cannot block the
+// status line. The branch-fallback queries match that bound.
+const GIT_TIMEOUT: Duration = Duration::from_secs(5);
+// The summary helper stays aligned with the reference's one-second
+// custom-command timeout: past it the reference renderer kills the helper and
+// renders the same `[Timeout]` marker the helper prints for itself.
+const SUMMARY_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, thiserror::Error)]
 pub enum GitError {
@@ -148,7 +155,7 @@ impl GitResolver {
     }
 
     pub fn summary(&mut self, cwd: &Path) -> Result<Option<GitSnapshot>, GitError> {
-        let deadline = Instant::now() + GIT_TIMEOUT;
+        let deadline = Instant::now() + SUMMARY_TIMEOUT;
         let environment_override = has_git_environment_override();
         let Some(repository) = (if environment_override {
             discover_repository_with_git(cwd, deadline)?

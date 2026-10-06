@@ -1,0 +1,2 @@
+{"timestamp":"2026-07-11T01:00:00.000Z","message":{"stop_reason":"end_turn","usage":{"input_tokens":5000,"output_tokens":100,"cache_read_input_tokens":190000,"cache_creation_input_tokens":40000}}}
+{"type":"system","subtype":"compact_boundary","timestamp":"2026-07-11T01:05:00.000Z","compactMetadata":{"trigger":"manual","preTokens":235100,"postTokens":18000}}

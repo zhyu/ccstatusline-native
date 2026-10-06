@@ -185,7 +185,8 @@ impl SupportReport {
 }
 
 fn default_flex_mode() -> String {
-    "full-minus-40".to_string()
+    // ccstatusline 2.2.30 defaults an absent flexMode to "full".
+    "full".to_string()
 }
 fn default_compact_threshold() -> f64 {
     60.0
@@ -506,7 +507,6 @@ fn validate_reference_schema(config: &LoadedConfig, issues: &mut Vec<SupportIssu
         "preserveColors",
         "timeout",
         "merge",
-        "hide",
     ];
     let Some(lines) = root.get("lines").and_then(Value::as_array) else {
         return;

@@ -4,7 +4,7 @@
 
 This repository is a strict native fast path for a useful subset of
 `ccstatusline`, not an independent status-line design. Its compatibility target
-is pinned in `src/lib.rs` and is currently `ccstatusline@2.2.23`.
+is pinned in `src/lib.rs` and is currently `ccstatusline@2.2.30`.
 
 The central invariant is:
 
@@ -56,6 +56,11 @@ make every field or metadata value valid. In particular, do not weaken checks
 for generic bold/dim/merge/hide behavior, arbitrary custom commands, or unknown
 fields until the corresponding rendering path is implemented.
 
+The pin is a version 3 configuration surface. ccstatusline 2.2.30 writes
+version 4 settings (adding `defaultPaddingSide`, `numberFormat`,
+`terminalWidthCacheTtlSeconds`, `customCommandCacheTtlSeconds`, and unified
+`metadata.hide` lists); those files delegate until a v4 audit happens.
+
 The Git-summary exception is deliberately narrow. `commandPath` must equal
 `ccstatusline-native --git-summary`; `timeout` may be absent or `1000`, and
 `preserveColors` may be absent or `false`. `maxWidth`, `rawValue`, `metadata`,
@@ -75,17 +80,22 @@ Use this sequence for every compatibility addition:
 3. Query the pinned behavior oracle. Prefer an installed reference, then:
 
    ```sh
-   bunx -y ccstatusline@2.2.23 --config tests/fixtures/example-settings.json
+   bunx -y ccstatusline@2.2.30 --config tests/fixtures/example-settings.json
    # or
-   npx --yes ccstatusline@2.2.23 --config tests/fixtures/example-settings.json
+   npx --yes ccstatusline@2.2.30 --config tests/fixtures/example-settings.json
    ```
+
+   The reference persists migrated settings back to whatever file `--config`
+   names (a v3 file comes back as v4), so always point it at a scratch copy.
+   `scripts/compare-reference.sh` already does this; a checked-in fixture must
+   never be handed to the reference directly.
 
    Capture raw stdout bytes. Exercise absent/null/empty values, raw and styled
    variants, wide and narrow widths, and multiple lines when those cases can
    affect the feature.
 4. If outputs cannot distinguish the semantics, fetch the exact published
    package on demand into a temporary directory—for example with
-   `npm pack ccstatusline@2.2.23 --pack-destination "$TMPDIR"`—and inspect the
+   `npm pack ccstatusline@2.2.30 --pack-destination "$TMPDIR"`—and inspect the
    smallest relevant source area. Do not commit the archive or extracted code,
    and do not add ccstatusline as a submodule, subtree, or runtime source
    dependency.

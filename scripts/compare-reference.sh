@@ -5,7 +5,7 @@ usage() {
   cat >&2 <<'EOF'
 Usage: compare-reference.sh CONFIG STATUS_JSON [NATIVE_BINARY] [WIDTH ...]
 
-Compare raw output from ccstatusline-native with ccstatusline 2.2.23.
+Compare raw output from ccstatusline-native with ccstatusline 2.2.30.
 The reference is selected in this order: ccstatusline, bunx, npx.
 EOF
 }
@@ -44,17 +44,24 @@ ln -s "$native" "$temporary/candidate-bin/ccstatusline-native"
 PATH="$temporary/candidate-bin:$PATH"
 export PATH
 
+# The reference migrates and rewrites the config file it is pointed at (v3
+# becomes v4), so never hand it the caller's path. Migration preserves the
+# rendering of a valid v3 file, and the native side keeps reading the
+# pristine original.
+reference_config="$temporary/reference-config.json"
+cp "$config" "$reference_config"
+
 run_reference() {
   width=$1
   if command -v ccstatusline >/dev/null 2>&1 \
-    && ccstatusline --version 2>/dev/null | grep -q '2\.2\.23'; then
-    CCSTATUSLINE_WIDTH=$width ccstatusline --config "$config"
+    && ccstatusline --version 2>/dev/null | grep -q '2\.2\.30'; then
+    CCSTATUSLINE_WIDTH=$width ccstatusline --config "$reference_config"
   elif command -v bunx >/dev/null 2>&1; then
-    CCSTATUSLINE_WIDTH=$width bunx -y ccstatusline@2.2.23 --config "$config"
+    CCSTATUSLINE_WIDTH=$width bunx -y ccstatusline@2.2.30 --config "$reference_config"
   elif command -v npx >/dev/null 2>&1; then
-    CCSTATUSLINE_WIDTH=$width npx --yes ccstatusline@2.2.23 --config "$config"
+    CCSTATUSLINE_WIDTH=$width npx --yes ccstatusline@2.2.30 --config "$reference_config"
   else
-    echo "Install ccstatusline 2.2.23, bunx, or npx to run the oracle." >&2
+    echo "Install ccstatusline 2.2.30, bunx, or npx to run the oracle." >&2
     return 127
   fi
 }

@@ -215,7 +215,7 @@ fn true_unknown_width_uses_native_reference_semantics() {
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     assert_eq!(output.stdout.len(), 767);
-    // ccstatusline 2.2.23 with both width variables absent and PATH disabled,
+    // ccstatusline 2.2.30 with both width variables absent and PATH disabled,
     // which makes its ancestor, stty, tput, and Git probes unavailable.
     assert_eq!(
         format!("{:x}", Sha256::digest(&output.stdout)),
@@ -485,7 +485,7 @@ printf '# branch.oid 0123456789abcdef\000# branch.head main\000'
 }
 
 #[test]
-fn early_context_uses_223_environment_window_without_fallback() {
+fn early_context_uses_pinned_environment_window_without_fallback() {
     let temp = tempfile::tempdir().unwrap();
     let config = temp.path().join("settings.json");
     fs::write(&config, include_bytes!("fixtures/settings.json")).unwrap();

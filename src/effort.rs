@@ -1,4 +1,4 @@
-//! Thinking-effort resolution compatible with ccstatusline 2.2.23.
+//! Thinking-effort resolution compatible with ccstatusline 2.2.30.
 
 use crate::status::{StatusEffort, StatusInput};
 use regex::Regex;
@@ -134,7 +134,10 @@ pub fn settings_effort(path: &Path) -> Option<ResolvedEffort> {
 /// Scan newest-to-oldest. Encountering a `/model` row without an effort is a
 /// barrier: an older selection is stale, so settings must supply the fallback.
 pub fn transcript_effort(path: &Path) -> Option<ResolvedEffort> {
-    let transcript = fs::read_to_string(path).ok()?;
+    // The reference decodes UTF-8 lossily and strips a BOM from the first line.
+    let bytes = fs::read(path).ok()?;
+    let transcript = String::from_utf8_lossy(&bytes);
+    let transcript = transcript.strip_prefix('\u{feff}').unwrap_or(&transcript);
 
     for line in transcript.lines().rev() {
         if line.is_empty() {
@@ -150,6 +153,12 @@ pub fn transcript_effort(path: &Path) -> Option<ResolvedEffort> {
         else {
             continue;
         };
+
+        // The reference rejects records whose raw content mentions neither
+        // command prefix before it strips escape sequences.
+        if !content.contains(COMMAND_PREFIX) && !content.contains(MODEL_PREFIX) {
+            continue;
+        }
 
         let visible = ANSI_SEQUENCE.replace_all(content, "");
         let visible = visible.trim();

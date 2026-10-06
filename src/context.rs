@@ -53,11 +53,22 @@ pub fn transcript_context_length(path: &Path) -> Result<f64, ContextError> {
         Err(_) => return Ok(0.0),
     };
     let transcript = String::from_utf8_lossy(&bytes);
+    // The reference line reader strips a BOM from the first line.
+    let transcript = transcript.strip_prefix('\u{feff}').unwrap_or(&transcript);
 
     let mut saw_stop_reason = false;
     let mut best_legacy = None;
     let mut best_finalized = None;
     let mut final_unfinished = None;
+
+    // ccstatusline 2.2.25+: usage rows before the most recent compact_boundary
+    // describe a context that no longer exists, so post-boundary candidates are
+    // tracked separately and reset by every boundary row.
+    let mut saw_boundary = false;
+    let mut boundary_after_last_usage = false;
+    let mut last_boundary_post_tokens = None;
+    let mut best_post_legacy = None;
+    let mut best_post_finalized = None;
 
     for line in transcript.lines() {
         if line.is_empty() {
@@ -66,6 +77,16 @@ pub fn transcript_context_length(path: &Path) -> Result<f64, ContextError> {
         let Ok(row) = serde_json::from_str::<Value>(line) else {
             continue;
         };
+
+        let boundary = is_compact_boundary(&row);
+        if boundary {
+            saw_boundary = true;
+            boundary_after_last_usage = true;
+            last_boundary_post_tokens = compact_boundary_post_tokens(&row);
+            best_post_legacy = None;
+            best_post_finalized = None;
+        }
+
         let Some(message) = row.get("message").and_then(Value::as_object) else {
             continue;
         };
@@ -84,8 +105,16 @@ pub fn transcript_context_length(path: &Path) -> Result<f64, ContextError> {
         let candidate = candidate(&row, usage)?;
         if let Some(candidate) = candidate {
             choose_newer(&mut best_legacy, candidate);
+            // A row cannot supply post-compaction context while it is itself
+            // the boundary.
+            if saw_boundary && !boundary {
+                choose_newer(&mut best_post_legacy, candidate);
+            }
             if stop_reason.is_some_and(javascript_truthy) {
                 choose_newer(&mut best_finalized, candidate);
+                if saw_boundary && !boundary {
+                    choose_newer(&mut best_post_finalized, candidate);
+                }
             }
         }
 
@@ -96,17 +125,52 @@ pub fn transcript_context_length(path: &Path) -> Result<f64, ContextError> {
         } else {
             None
         };
+        boundary_after_last_usage = false;
     }
 
-    let selected = if saw_stop_reason {
+    if saw_stop_reason {
         if let Some(candidate) = final_unfinished {
             choose_newer(&mut best_finalized, candidate);
+            // A boundary after the final unfinished row invalidates its context.
+            if saw_boundary && !boundary_after_last_usage {
+                choose_newer(&mut best_post_finalized, candidate);
+            }
         }
+    }
+
+    let selected = if saw_boundary {
+        if saw_stop_reason {
+            best_post_finalized
+        } else {
+            best_post_legacy
+        }
+    } else if saw_stop_reason {
         best_finalized
     } else {
         best_legacy
     };
-    Ok(selected.map_or(0.0, |candidate| candidate.context_length))
+    let selected = match (saw_boundary, selected) {
+        (true, None) => last_boundary_post_tokens,
+        (_, value) => value.map(|candidate| candidate.context_length),
+    };
+    Ok(selected.unwrap_or(0.0))
+}
+
+/// `{type: "system", subtype: "compact_boundary"}` on the main chain.
+fn is_compact_boundary(row: &Value) -> bool {
+    row.get("type").and_then(Value::as_str) == Some("system")
+        && row.get("subtype").and_then(Value::as_str) == Some("compact_boundary")
+        && row.get("isSidechain") != Some(&Value::Bool(true))
+}
+
+/// The boundary's `compactMetadata.postTokens`, clamped like the reference's
+/// finite-number coercion. Older transcripts omit it.
+fn compact_boundary_post_tokens(row: &Value) -> Option<f64> {
+    row.get("compactMetadata")
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get("postTokens"))
+        .and_then(Value::as_f64)
+        .map(|tokens| tokens.max(0.0))
 }
 
 /// Infer the context-window size exactly where ContextBar uses token metrics.
@@ -145,9 +209,9 @@ fn candidate(row: &Value, usage: &Map<String, Value>) -> Result<Option<Candidate
         .as_str()
         .and_then(parse_canonical_timestamp)
         .ok_or(ContextError::Unsupported("a non-canonical timestamp"))?;
-    let context_length = usage_number_or_zero(usage, "input_tokens", true)?
-        + usage_number_or_zero(usage, "cache_read_input_tokens", false)?
-        + usage_number_or_zero(usage, "cache_creation_input_tokens", false)?;
+    let context_length = usage_number_or_zero(usage, "input_tokens")?
+        + usage_number_or_zero(usage, "cache_read_input_tokens")?
+        + usage_number_or_zero(usage, "cache_creation_input_tokens")?;
 
     Ok(Some(Candidate {
         timestamp,
@@ -155,19 +219,22 @@ fn candidate(row: &Value, usage: &Map<String, Value>) -> Result<Option<Candidate
     }))
 }
 
+/// ccstatusline's `parseUsageTokens` coerces every count identically: absent
+/// and null are zero, finite numbers clamp at zero. Other JSON types are
+/// structurally incompatible and delegate.
 fn usage_number_or_zero(
     usage: &Map<String, Value>,
     key: &'static str,
-    javascript_or: bool,
 ) -> Result<f64, ContextError> {
     let Some(value) = usage.get(key) else {
         return Ok(0.0);
     };
-    if value.is_null() || (javascript_or && !javascript_truthy(value)) {
+    if value.is_null() {
         return Ok(0.0);
     }
     value
         .as_f64()
+        .map(|number| number.max(0.0))
         .ok_or(ContextError::Unsupported("a non-numeric token count"))
 }
 
@@ -333,8 +400,21 @@ mod tests {
         assert_eq!(transcript_context_length(file.path()).unwrap(), 330.0);
     }
 
+    fn compact_boundary(post_tokens: Option<u64>) -> Value {
+        let mut boundary = json!({
+            "type": "system",
+            "subtype": "compact_boundary",
+            "timestamp": "2026-01-01T10:05:00.000Z"
+        });
+        if let Some(post_tokens) = post_tokens {
+            boundary["compactMetadata"] =
+                json!({ "trigger": "manual", "preTokens": 235100, "postTokens": post_tokens });
+        }
+        boundary
+    }
+
     #[test]
-    fn compact_markers_and_malformed_lines_do_not_replace_usage() {
+    fn compact_boundary_without_post_tokens_zeroes_context_until_next_turn() {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         writeln!(file, "not json").unwrap();
         writeln!(
@@ -343,16 +423,84 @@ mod tests {
             usage("2026-01-01T10:00:00.000Z", 100, 7, 20, 30)
         )
         .unwrap();
-        writeln!(
-            file,
-            "{}",
-            json!({ "type": "system", "subtype": "compact_boundary" })
-        )
-        .unwrap();
-        assert_eq!(transcript_context_length(file.path()).unwrap(), 150.0);
+        writeln!(file, "{}", compact_boundary(None)).unwrap();
+        assert_eq!(transcript_context_length(file.path()).unwrap(), 0.0);
 
         writeln!(file, "{}", usage("2026-01-01T11:00:00.000Z", 10, 8, 2, 3)).unwrap();
         assert_eq!(transcript_context_length(file.path()).unwrap(), 15.0);
+    }
+
+    #[test]
+    fn compact_boundary_reports_post_tokens_before_the_next_turn() {
+        let file = transcript(&[
+            usage("2026-01-01T10:00:00.000Z", 5_000, 100, 190_000, 40_000),
+            compact_boundary(Some(18_000)),
+        ]);
+        assert_eq!(transcript_context_length(file.path()).unwrap(), 18_000.0);
+    }
+
+    #[test]
+    fn first_turn_after_compact_boundary_beats_its_post_tokens() {
+        let file = transcript(&[
+            usage("2026-01-01T10:00:00.000Z", 5_000, 100, 190_000, 40_000),
+            compact_boundary(Some(18_000)),
+            usage("2026-01-01T10:06:00.000Z", 200, 50, 17_000, 500),
+        ]);
+        assert_eq!(transcript_context_length(file.path()).unwrap(), 17_700.0);
+    }
+
+    #[test]
+    fn later_compact_boundary_overwrites_earlier_post_tokens() {
+        let file = transcript(&[
+            usage("2026-01-01T10:00:00.000Z", 100, 1, 20, 30),
+            compact_boundary(Some(18_000)),
+            compact_boundary(None),
+        ]);
+        assert_eq!(transcript_context_length(file.path()).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn sidechain_compact_boundary_is_ignored() {
+        let mut boundary = compact_boundary(Some(18_000));
+        boundary["isSidechain"] = json!(true);
+        let file = transcript(&[usage("2026-01-01T10:00:00.000Z", 100, 7, 20, 30), boundary]);
+        assert_eq!(transcript_context_length(file.path()).unwrap(), 150.0);
+    }
+
+    #[test]
+    fn compact_boundary_after_unfinished_row_discards_its_context() {
+        let mut unfinished = usage("2026-01-01T10:06:00.000Z", 300, 1, 20, 10);
+        unfinished["message"]["stop_reason"] = Value::Null;
+        let file = transcript(&[unfinished, compact_boundary(Some(18_000))]);
+        assert_eq!(transcript_context_length(file.path()).unwrap(), 18_000.0);
+    }
+
+    #[test]
+    fn unfinished_row_after_compact_boundary_supplies_context() {
+        let mut unfinished = usage("2026-01-01T10:06:00.000Z", 300, 1, 20, 10);
+        unfinished["message"]["stop_reason"] = Value::Null;
+        let file = transcript(&[compact_boundary(Some(18_000)), unfinished]);
+        assert_eq!(transcript_context_length(file.path()).unwrap(), 330.0);
+    }
+
+    #[test]
+    fn negative_token_counts_clamp_to_zero() {
+        let mut row = usage("2026-01-01T10:00:00.000Z", 100, 1, 20, 30);
+        row["message"]["usage"]["cache_read_input_tokens"] = json!(-50);
+        let file = transcript(&[row]);
+        assert_eq!(transcript_context_length(file.path()).unwrap(), 130.0);
+    }
+
+    #[test]
+    fn bom_prefixed_transcript_still_parses() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            file,
+            "\u{feff}{}",
+            usage("2026-01-01T10:00:00.000Z", 100, 7, 20, 30)
+        )
+        .unwrap();
+        assert_eq!(transcript_context_length(file.path()).unwrap(), 150.0);
     }
 
     #[test]

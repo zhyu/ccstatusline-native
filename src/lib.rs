@@ -13,4 +13,4 @@ mod widgets;
 pub use app::run;
 
 pub const NAME: &str = "ccstatusline-native";
-pub const REFERENCE_CCSTATUSLINE_VERSION: &str = "2.2.23";
+pub const REFERENCE_CCSTATUSLINE_VERSION: &str = "2.2.30";
