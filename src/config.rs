@@ -46,6 +46,8 @@ pub struct Settings {
     pub default_separator: Option<String>,
     #[serde(default)]
     pub default_padding: String,
+    #[serde(default = "default_padding_side")]
+    pub default_padding_side: String,
     #[serde(default)]
     #[allow(dead_code)] // Used only by the non-Powerline renderer.
     pub inherit_separator_colors: bool,
@@ -53,8 +55,17 @@ pub struct Settings {
     pub override_foreground_color: Option<String>,
     #[serde(default)]
     pub global_bold: bool,
+    pub number_format: Option<Value>,
     #[serde(default = "default_git_cache_ttl")]
     pub git_cache_ttl_seconds: f64,
+    // The reference uses this only for its negative-only terminal-width cache:
+    // it records failed probes per session and skips re-probing for the TTL.
+    // The native renderer probes every invocation instead, which diverges only
+    // if a probe starts succeeding within the TTL of a failure in one session.
+    #[serde(default = "default_terminal_width_cache_ttl")]
+    pub terminal_width_cache_ttl_seconds: f64,
+    #[serde(default)]
+    pub custom_command_cache_ttl_seconds: f64,
     #[serde(default)]
     pub minimalist_mode: bool,
     #[serde(default)]
@@ -117,6 +128,7 @@ pub struct WidgetItem {
     pub background_color: Option<String>,
     pub bold: Option<bool>,
     pub dim: Option<Value>,
+    pub number_format: Option<Value>,
     pub character: Option<String>,
     pub raw_value: Option<bool>,
     pub custom_text: Option<String>,
@@ -127,6 +139,9 @@ pub struct WidgetItem {
     pub timeout: Option<u64>,
     pub merge: Option<Value>,
     pub hide: Option<bool>,
+    #[allow(dead_code)]
+    // Verified no-op in ccstatusline 2.2.30 while powerline.autoAlign is false, which the validator already requires.
+    pub exclude_from_auto_align: Option<bool>,
     #[serde(default)]
     pub metadata: BTreeMap<String, String>,
     #[serde(flatten)]
@@ -194,7 +209,14 @@ fn default_compact_threshold() -> f64 {
 fn default_color_level() -> u8 {
     2
 }
+fn default_padding_side() -> String {
+    // ccstatusline 2.2.30 defaults an absent defaultPaddingSide to "both".
+    "both".to_string()
+}
 fn default_git_cache_ttl() -> f64 {
+    5.0
+}
+fn default_terminal_width_cache_ttl() -> f64 {
     5.0
 }
 fn default_separators() -> Vec<String> {
@@ -270,10 +292,10 @@ pub fn support_report(config: &LoadedConfig) -> SupportReport {
     let mut issues = Vec::new();
     validate_reference_schema(config, &mut issues);
 
-    if settings.version != 3 {
+    if !matches!(settings.version, 3 | 4) {
         issues.push(issue(
             "/version",
-            "only fully migrated v3 settings are supported",
+            "only fully migrated v3 or v4 settings are supported",
             Some(Value::from(settings.version)),
         ));
     }
@@ -303,6 +325,17 @@ pub fn support_report(config: &LoadedConfig) -> SupportReport {
             "/gitCacheTtlSeconds",
             "the native fast path currently implements only the five-second Git cache used by the intrinsic helper",
             serde_json::Number::from_f64(settings.git_cache_ttl_seconds).map(Value::Number),
+        ));
+    }
+    if uses_git_summary && settings.custom_command_cache_ttl_seconds != 0.0 {
+        // The reference would serve the helper's stdout from its session cache
+        // for this TTL; the native intrinsic renders in process and always
+        // computes fresh output, so only the disabled cache is equivalent.
+        issues.push(issue(
+            "/customCommandCacheTtlSeconds",
+            "the intrinsic Git summary supports only the disabled command cache (0)",
+            serde_json::Number::from_f64(settings.custom_command_cache_ttl_seconds)
+                .map(Value::Number),
         ));
     }
     if settings.global_bold {
@@ -341,6 +374,13 @@ pub fn support_report(config: &LoadedConfig) -> SupportReport {
         issues.push(issue(
             "/updatemessage",
             "update messages mutate settings and must use the reference fallback",
+            None,
+        ));
+    }
+    if settings.number_format.is_some() {
+        issues.push(issue(
+            "/numberFormat",
+            "global number formats are not implemented",
             None,
         ));
     }
@@ -453,6 +493,32 @@ fn validate_reference_schema(config: &LoadedConfig, issues: &mut Vec<SupportIssu
             serde_json::Number::from_f64(config.settings.git_cache_ttl_seconds).map(Value::Number),
         ));
     }
+    if !(0.0..=300.0).contains(&config.settings.terminal_width_cache_ttl_seconds) {
+        issues.push(issue(
+            "/terminalWidthCacheTtlSeconds",
+            "ccstatusline requires a number from 0 through 300",
+            serde_json::Number::from_f64(config.settings.terminal_width_cache_ttl_seconds)
+                .map(Value::Number),
+        ));
+    }
+    if !(0.0..=60.0).contains(&config.settings.custom_command_cache_ttl_seconds) {
+        issues.push(issue(
+            "/customCommandCacheTtlSeconds",
+            "ccstatusline requires a number from 0 through 60",
+            serde_json::Number::from_f64(config.settings.custom_command_cache_ttl_seconds)
+                .map(Value::Number),
+        ));
+    }
+    if !matches!(
+        config.settings.default_padding_side.as_str(),
+        "both" | "left" | "right"
+    ) {
+        issues.push(issue(
+            "/defaultPaddingSide",
+            "ccstatusline requires one of `both`, `left`, or `right`",
+            Some(Value::from(config.settings.default_padding_side.clone())),
+        ));
+    }
 
     for key in [
         "defaultSeparator",
@@ -460,6 +526,9 @@ fn validate_reference_schema(config: &LoadedConfig, issues: &mut Vec<SupportIssu
         "overrideForegroundColor",
         "updatemessage",
         "installation",
+        // Option<Value> maps an explicit null to None, which would hide a value
+        // that fails the reference schema and sends it to default settings.
+        "numberFormat",
     ] {
         if root.get(key).is_some_and(Value::is_null) {
             issues.push(issue(
@@ -498,6 +567,7 @@ fn validate_reference_schema(config: &LoadedConfig, issues: &mut Vec<SupportIssu
         "backgroundColor",
         "bold",
         "dim",
+        "numberFormat",
         "character",
         "rawValue",
         "customText",
@@ -507,6 +577,7 @@ fn validate_reference_schema(config: &LoadedConfig, issues: &mut Vec<SupportIssu
         "preserveColors",
         "timeout",
         "merge",
+        "excludeFromAutoAlign",
     ];
     let Some(lines) = root.get("lines").and_then(Value::as_array) else {
         return;
@@ -605,6 +676,13 @@ fn validate_widget(
             format!("{base}/hide"),
             "generic widget hiding is not implemented",
             Some(Value::Bool(true)),
+        ));
+    }
+    if item.number_format.is_some() {
+        issues.push(issue(
+            format!("{base}/numberFormat"),
+            "per-widget number formats are not implemented",
+            None,
         ));
     }
     reject_option(
@@ -733,6 +811,20 @@ fn validate_widget(
                 }
             }
         }
+        // ccstatusline 2.2.30 reads only the `no-git` entry of the hide-state
+        // list for git-branch; other entries are inert. Other metadata keys
+        // (repo links, legacy hide flags) stay unsupported.
+        "git-branch" => {
+            for (key, value) in &item.metadata {
+                if key != "hide" {
+                    issues.push(issue(
+                        format!("{base}/metadata/{key}"),
+                        "only the hide-state list is implemented for git-branch metadata",
+                        Some(Value::from(value.clone())),
+                    ));
+                }
+            }
+        }
         _ if !item.metadata.is_empty() => {
             for (key, value) in &item.metadata {
                 issues.push(issue(
@@ -769,6 +861,209 @@ mod tests {
         let report = support_report(&current_settings());
         assert_eq!(report.issues, Vec::new());
         assert!(report.supported);
+    }
+
+    fn fixture_settings(name: &str) -> LoadedConfig {
+        let bytes = fs::read(format!(
+            "{}/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("fixture is readable");
+        load_from_bytes(&bytes, name)
+    }
+
+    fn load_from_bytes(bytes: &[u8], name: &str) -> LoadedConfig {
+        LoadedConfig {
+            path: PathBuf::from(name),
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+            raw: serde_json::from_slice(bytes).unwrap(),
+            settings: serde_json::from_slice(bytes).unwrap(),
+        }
+    }
+
+    #[test]
+    fn migrated_and_saved_v4_fixtures_are_supported() {
+        // The fixtures are reference-produced: settings-v4 is a load-time
+        // 3->4 migration, settings-v4-saved is a full TUI save with
+        // materialized defaults, and the remaining two cover the intrinsic
+        // custom command and the migrated git-branch hide list.
+        for name in [
+            "settings-v4.json",
+            "settings-v4-saved.json",
+            "settings-v4-git-summary.json",
+            "settings-v4-hide-nogit.json",
+        ] {
+            let report = support_report(&fixture_settings(name));
+            assert_eq!(report.issues, Vec::new(), "fixture {name} unsupported");
+            assert!(report.supported, "fixture {name} unsupported");
+        }
+    }
+
+    #[test]
+    fn only_versions_3_and_4_are_supported() {
+        for version in [0, 1, 2, 5, 6] {
+            let mut config = current_settings();
+            config.settings.version = version;
+            let report = support_report(&config);
+            assert!(!report.supported, "version {version} accepted");
+            assert!(
+                report.issues.iter().any(|issue| issue.path == "/version"),
+                "version {version} missing /version issue"
+            );
+        }
+        for version in [3, 4] {
+            let mut config = current_settings();
+            config.settings.version = version;
+            assert!(support_report(&config).supported, "version {version}");
+        }
+    }
+
+    #[test]
+    fn mirrors_the_v4_schema_bounds() {
+        let mut config = current_settings();
+        config.settings.version = 4;
+        config.settings.terminal_width_cache_ttl_seconds = 301.0;
+        config.settings.custom_command_cache_ttl_seconds = 61.0;
+        config.settings.default_padding_side = "middle".into();
+        let report = support_report(&config);
+        let paths = report
+            .issues
+            .iter()
+            .map(|issue| issue.path.as_str())
+            .collect::<Vec<_>>();
+        assert!(paths.contains(&"/terminalWidthCacheTtlSeconds"));
+        assert!(paths.contains(&"/customCommandCacheTtlSeconds"));
+        assert!(paths.contains(&"/defaultPaddingSide"));
+
+        let mut config = current_settings();
+        config.settings.version = 4;
+        config.settings.terminal_width_cache_ttl_seconds = 300.0;
+        config.settings.custom_command_cache_ttl_seconds = 60.0;
+        for side in ["both", "left", "right"] {
+            config.settings.default_padding_side = side.into();
+            assert!(support_report(&config).supported, "side {side}");
+        }
+    }
+
+    #[test]
+    fn rejects_number_format_settings() {
+        let mut config = current_settings();
+        config.settings.version = 4;
+        config.settings.number_format =
+            Some(serde_json::json!({ "token": { "style": "compact" } }));
+        let report = support_report(&config);
+        assert!(!report.supported);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.path == "/numberFormat")
+        );
+
+        let mut config = current_settings();
+        config.settings.lines[0][3].number_format =
+            Some(serde_json::json!({ "style": "whole", "decimals": 2 }));
+        let report = support_report(&config);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.path == "/lines/0/3/numberFormat")
+        );
+    }
+
+    #[test]
+    fn rejects_null_number_format_like_the_reference_schema() {
+        let mut config = current_settings();
+        config.settings.version = 4;
+        config.raw["numberFormat"] = Value::Null;
+        let report = support_report(&config);
+        assert!(!report.supported, "null numberFormat accepted");
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.path == "/numberFormat")
+        );
+
+        let mut config = current_settings();
+        config.raw["lines"][0][3]["numberFormat"] = Value::Null;
+        config.settings = serde_json::from_value(config.raw.clone()).unwrap();
+        let report = support_report(&config);
+        assert!(!report.supported, "null widget numberFormat accepted");
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.path == "/lines/0/3/numberFormat")
+        );
+    }
+
+    #[test]
+    fn intrinsic_git_summary_requires_the_disabled_command_cache() {
+        let mut config = current_settings();
+        config.settings.version = 4;
+        {
+            let item = &mut config.settings.lines[1][1];
+            item.kind = "custom-command".into();
+            item.command_path = Some(crate::git::GIT_SUMMARY_COMMAND.into());
+        }
+        config.settings.custom_command_cache_ttl_seconds = 30.0;
+        let report = support_report(&config);
+        assert!(!report.supported);
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.path == "/customCommandCacheTtlSeconds")
+        );
+
+        config.settings.custom_command_cache_ttl_seconds = 0.0;
+        assert!(support_report(&config).supported);
+
+        // Without a custom-command widget the value cannot affect rendering.
+        let mut branch_only = current_settings();
+        branch_only.settings.version = 4;
+        branch_only.settings.custom_command_cache_ttl_seconds = 60.0;
+        assert!(support_report(&branch_only).supported);
+    }
+
+    #[test]
+    fn git_branch_supports_only_the_hide_state_list_metadata() {
+        let mut config = current_settings();
+        config.settings.version = 4;
+        config.settings.lines[1][1]
+            .metadata
+            .insert("hide".into(), "no-git".into());
+        assert!(support_report(&config).supported);
+
+        for legacy in ["hideNoGit", "linkToRepo"] {
+            let mut config = current_settings();
+            config.settings.lines[1][1]
+                .metadata
+                .insert(legacy.into(), "true".into());
+            let report = support_report(&config);
+            assert!(!report.supported, "{legacy} accepted");
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .any(|issue| issue.path == format!("/lines/1/1/metadata/{legacy}"))
+            );
+        }
+    }
+
+    #[test]
+    fn exclude_from_auto_align_is_inert_without_auto_align() {
+        let mut config = current_settings();
+        config.settings.version = 4;
+        config.settings.lines[1][1].exclude_from_auto_align = Some(true);
+        assert!(support_report(&config).supported);
+
+        let mut config = current_settings();
+        config.raw["lines"][1][1]["excludeFromAutoAlign"] = Value::Null;
+        config.settings = serde_json::from_value(config.raw.clone()).unwrap();
+        assert!(!support_report(&config).supported, "null accepted");
     }
 
     #[test]

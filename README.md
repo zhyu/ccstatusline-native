@@ -88,22 +88,32 @@ not already installed or cached; the native fast path does not.
 ## Supported configuration
 
 The compatibility validator in the current binary is authoritative. The
-initial fast path supports version 3 settings with:
+fast path supports version 3 and version 4 settings with:
 
 - `flexMode: "full"` (the reference default since 2.2.30, so an absent
   `flexMode` also matches) and truecolor `colorLevel: 3`;
 - `gitCacheTtlSeconds: 5` when the rich Git intrinsic is selected, matching
   its fallback helper;
+- `customCommandCacheTtlSeconds: 0` (the reference default) when the rich Git
+  intrinsic is selected, because the native intrinsic always renders fresh
+  output;
 - Powerline enabled with the `nord` theme;
 - configured separators, inverted separator flags, start caps, and end caps;
+- `defaultPadding` with `defaultPaddingSide` `both` (the default), `left`, or
+  `right`;
 - `autoAlign: false` and `continueThemeAcrossLines: false`; and
-- no global bold/minimalist mode, global color overrides, update message, or
-  unknown settings.
+- no global bold/minimalist mode, global color overrides, number formats,
+  update message, or unknown settings.
 
-The reference TUI writes version 4 settings once it saves (adding
-`defaultPaddingSide`, cache TTLs, number formats, and `metadata.hide` lists).
-Those files delegate to the reference unchanged: the fast path stays on the
-verified version 3 surface instead of guessing at the new fields.
+Version 4 is the format ccstatusline 2.2.30 writes: a version 3 file is
+migrated in place on any reference run, and a TUI save additionally
+materializes `defaultPaddingSide`, `terminalWidthCacheTtlSeconds`, and
+`customCommandCacheTtlSeconds`. Both shapes stay on the fast path.
+`terminalWidthCacheTtlSeconds` tunes the reference's negative-only
+terminal-width cache; the native renderer probes the terminal on every
+invocation instead, which can differ only if a width probe starts succeeding
+within the TTL of a failed probe in the same Claude Code session. Global and
+per-widget `numberFormat` settings still delegate to the reference.
 
 These widgets are implemented:
 
@@ -115,7 +125,7 @@ These widgets are implemented:
 | `model` | Model display name and `rawValue` behavior |
 | `thinking-effort` | Live status value with transcript/settings/default resolution and `rawValue` behavior |
 | `current-working-dir` | Current directory and `rawValue` behavior |
-| `git-branch` | Repository discovery, branch/no-git rendering, and `rawValue` behavior |
+| `git-branch` | Repository discovery, branch/no-git rendering, `rawValue` behavior, and the `metadata.hide` list's `no-git` state |
 | `custom-command` | Only the intrinsic `commandPath: "ccstatusline-native --git-summary"`; `timeout` may be absent or `1000`, and `preserveColors` may be absent or `false` |
 
 `context-bar` prefers Claude Code's live `context_window` metrics. When those
@@ -290,6 +300,15 @@ scripts/compare-reference.sh \
 scripts/compare-reference.sh \
   tests/fixtures/settings.json \
   tests/fixtures/status-transcript-compact.json
+
+# Reference-produced version 4 fixtures: load-time migration, TUI save, the
+# intrinsic custom command, and the migrated git-branch hide list.
+for fixture in settings-v4 settings-v4-saved settings-v4-git-summary \
+  settings-v4-hide-nogit; do
+  scripts/compare-reference.sh \
+    "tests/fixtures/$fixture.json" \
+    tests/fixtures/status.json
+done
 ```
 
 The script hands the reference a scratch copy of the config: ccstatusline

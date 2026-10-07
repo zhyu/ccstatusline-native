@@ -176,8 +176,22 @@ fn render_git_branch(item: &WidgetItem, status: &StatusInput, git: &mut GitResol
     match git.branch(&cwd) {
         Some(branch) if item.raw_value.unwrap_or(false) => branch,
         Some(branch) => format!("⎇ {branch}"),
+        // ccstatusline 2.2.30 returns null here when the hide list contains
+        // "no-git", which drops the widget from the line entirely.
+        None if hides_no_git(item) => String::new(),
         None => "⎇ no git".to_string(),
     }
+}
+
+/// Parse the widget's `metadata.hide` list like the reference's
+/// parseHideStates and test membership of `no-git`. JavaScript's `trim` also
+/// strips U+FEFF, so the closure extends Rust's Unicode whitespace set.
+fn hides_no_git(item: &WidgetItem) -> bool {
+    item.metadata.get("hide").is_some_and(|list| {
+        list.split(',')
+            .map(|state| state.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}'))
+            .any(|state| state == "no-git")
+    })
 }
 
 /// Render the one custom command deliberately implemented as a native
@@ -446,5 +460,28 @@ mod tests {
         let status = status(json!({ "cwd": directory.path() }));
         let mut git = GitResolver::new(0.0);
         assert_eq!(render_git_summary(&status, &mut git), "⎇ no git");
+    }
+
+    #[test]
+    fn git_branch_hide_no_git_drops_the_widget_outside_a_repository() {
+        let directory = tempfile::tempdir().unwrap();
+        let status = status(json!({ "cwd": directory.path() }));
+
+        let mut branch = item("git-branch");
+        branch.metadata.insert("hide".into(), "no-git".into());
+        let mut git = GitResolver::new(0.0);
+        assert_eq!(render_git_branch(&branch, &status, &mut git), "");
+
+        // Entries are comma-separated and trimmed like the reference parser.
+        branch
+            .metadata
+            .insert("hide".into(), " other , no-git ".into());
+        assert_eq!(render_git_branch(&branch, &status, &mut git), "");
+
+        branch.metadata.insert("hide".into(), "zero".into());
+        assert_eq!(render_git_branch(&branch, &status, &mut git), "⎇ no git");
+
+        branch.metadata.remove("hide");
+        assert_eq!(render_git_branch(&branch, &status, &mut git), "⎇ no git");
     }
 }

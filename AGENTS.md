@@ -56,10 +56,27 @@ make every field or metadata value valid. In particular, do not weaken checks
 for generic bold/dim/merge/hide behavior, arbitrary custom commands, or unknown
 fields until the corresponding rendering path is implemented.
 
-The pin is a version 3 configuration surface. ccstatusline 2.2.30 writes
-version 4 settings (adding `defaultPaddingSide`, `numberFormat`,
-`terminalWidthCacheTtlSeconds`, `customCommandCacheTtlSeconds`, and unified
-`metadata.hide` lists); those files delegate until a v4 audit happens.
+The pin covers version 3 and version 4 configuration. ccstatusline 2.2.30
+writes version 4 settings: any reference run migrates a v3 file in place
+(version bump plus unified `metadata.hide` lists), and a TUI save additionally
+materializes `defaultPaddingSide`, `terminalWidthCacheTtlSeconds`, and
+`customCommandCacheTtlSeconds`. Both shapes are supported. The v4 audit
+decisions are:
+
+- `defaultPaddingSide` (`both`/`left`/`right`) is implemented.
+- `terminalWidthCacheTtlSeconds` is accepted in range; the reference spends it
+  only on a negative-only width-probe cache, which the native renderer
+  replaces with a fresh probe on every invocation.
+- `customCommandCacheTtlSeconds` must remain `0` when the Git-summary
+  intrinsic is present, because the native intrinsic always renders fresh
+  output instead of serving the reference's session cache.
+- Global and per-widget `numberFormat` settings are still unsupported.
+- `excludeFromAutoAlign` is accepted as a verified no-op while
+  `powerline.autoAlign` is restricted to `false`.
+- For `git-branch`, the only supported metadata key is the `hide` list, and
+  only its `no-git` state has meaning in the reference; legacy hide flags
+  (`hideNoGit`, ...) stay unsupported because the reference migrates them on
+  first load.
 
 The Git-summary exception is deliberately narrow. `commandPath` must equal
 `ccstatusline-native --git-summary`; `timeout` may be absent or `1000`, and
@@ -148,7 +165,10 @@ still follow the normal pinned-oracle workflow above.
   files, do not cache failures, and read operation markers fresh. Until the
   helper can receive another TTL without loading config, the validator must
   reject `gitCacheTtlSeconds` values other than `5` for configurations that
-  contain the intrinsic.
+  contain the intrinsic. Likewise reject `customCommandCacheTtlSeconds` values
+  other than `0` there, because the reference would serve the helper's stdout
+  from its session cache while the native intrinsic always renders fresh
+  output.
 - Never invent a missing runtime datum. Implement the pinned reference's tested
   absent-data behavior when it has one; otherwise delegate. Terminal width is a
   defined example: after every probe fails, render with no effective width,

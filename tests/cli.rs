@@ -719,6 +719,72 @@ fn ancestor_terminal_helper() {
 }
 
 #[test]
+fn migrated_and_saved_v4_configs_stay_native() {
+    let temp = tempfile::tempdir().unwrap();
+    let reference = executable_script(temp.path(), "exit 97");
+    let input = include_bytes!("fixtures/status.json");
+
+    let v3_config = temp.path().join("settings-v3.json");
+    fs::write(&v3_config, include_bytes!("fixtures/settings.json")).unwrap();
+    let expected = Command::new(env!("CARGO_BIN_EXE_ccstatusline-native"))
+        .args(["--config", v3_config.to_str().unwrap()])
+        .env("CCSTATUSLINE_WIDTH", "131")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child.stdin.take().unwrap().write_all(input)?;
+            child.wait_with_output()
+        })
+        .unwrap();
+    assert!(expected.status.success());
+    assert!(expected.stderr.is_empty());
+
+    for fixture in [
+        "settings-v4.json",
+        "settings-v4-saved.json",
+        "settings-v4-hide-nogit.json",
+    ] {
+        let config = temp.path().join(fixture);
+        let bytes = fs::read(format!(
+            "{}/tests/fixtures/{fixture}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        fs::write(&config, bytes).unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_ccstatusline-native"))
+            .args(["--config", config.to_str().unwrap()])
+            .env("CCSTATUSLINE_NATIVE_FALLBACK", &reference)
+            .env("CCSTATUSLINE_WIDTH", "131")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        let output = child.wait_with_output().unwrap();
+
+        assert!(
+            output.status.success(),
+            "{fixture} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "{fixture} left the fast path: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if fixture == "settings-v4-hide-nogit.json" {
+            let rendered = String::from_utf8_lossy(&output.stdout);
+            assert!(!rendered.contains("no git"), "{fixture} showed git-branch");
+        } else {
+            assert_eq!(output.stdout, expected.stdout, "{fixture} diverged from v3");
+        }
+    }
+}
+
+#[test]
 fn failed_fallback_discards_partial_stdout_and_propagates_status() {
     let temp = tempfile::tempdir().unwrap();
     let config = unsupported_config(temp.path());
